@@ -5,7 +5,6 @@ version = "0.1.0"
 edition = "2021"
 authors = ["Ben Heard <benpheard@gmail.com>"]
 license = "ISC"
-license-file = "license.md"
 readme = "readme.md"
 repository = "https://gitlab.101100.ca/ben1jen/playback-rs/"
 keywords = ["music", "audio", "sound", "playback", "decoder", "multimedia", "media", "song", "player", "decode", "cpal", "symphonia", "samplerate"]
