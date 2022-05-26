@@ -1,4 +1,9 @@
+#![warn(missing_docs)]
+#![doc(issue_tracker_base_url = "https://gitlab.101100.ca/ben1jen/playback-rs/-/issues")]
+#![doc = include_str!("../docs.md")]
+
 use std::sync::{Arc, RwLock};
+use std::time::Duration;
 
 use color_eyre::eyre::{Report, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -11,8 +16,9 @@ use symphonia::core::errors::Error as SymphoniaError;
 use symphonia::core::formats::FormatOptions;
 use symphonia::core::io::{MediaSource, MediaSourceStream, MediaSourceStreamOptions};
 use symphonia::core::meta::MetadataOptions;
-use symphonia::core::probe::Hint;
 use symphonia::default;
+
+pub use symphonia::core::probe::Hint;
 
 type PlaybackState = (Vec<f32>, usize);
 
@@ -95,37 +101,48 @@ impl PlayerState {
 		info!("Converted song sample rate in {:?}", t.elapsed());
 		Ok(processed_samples)
 	}
+	fn stop(&self) {
+		*self.next_samples.write().unwrap() = None;
+		*self.playback.write().unwrap() = None;
+	}
+	fn skip(&self) {
+		*self.playback.write().unwrap() = None;
+	}
 	fn play_song(&self, song: &Song) -> Result<()> {
 		let samples = self.decode_song(song)?;
-		*self
-			.playback
-			.write()
-			.map_err(|_err| Report::msg("Playback mutex poisoned."))? = Some((samples, 0));
+		*self.next_samples.write().unwrap() = Some(samples);
 		Ok(())
 	}
-	fn next_song(&self, song: &Song) -> Result<()> {
-		let samples = self.decode_song(song)?;
-		*self
-			.next_samples
-			.write()
-			.map_err(|_err| Report::msg("Playing mutex poisoned."))? = Some(samples);
-		Ok(())
+	fn set_playing(&self, playing: bool) {
+		*self.playing.write().unwrap() = playing;
 	}
-	fn set_playing(&mut self, playing: bool) -> Result<()> {
-		*self
-			.playing
-			.write()
-			.map_err(|_err| Report::msg("Playing mutex poisoned."))? = playing;
-		Ok(())
+	fn get_position(&self) -> Option<(usize, usize)> {
+		self.playback
+			.read()
+			.unwrap()
+			.as_ref()
+			.map(|(samples, pos)| (*pos, samples.len()))
+	}
+	fn seek(&self, position: usize) -> bool {
+		if let Some((_samples, pos)) = self.playback.write().unwrap().as_mut() {
+			*pos = position;
+			true
+		} else {
+			false
+		}
 	}
 }
 
+/// Manages playback of [Song]s through [cpal] and sample conversion through [samplerate].
 pub struct Player {
 	_stream: Box<dyn StreamTrait>,
 	player_state: PlayerState,
 }
 
 impl Player {
+	/// Creates a new [Player] to play [Song]s
+	///
+	/// On Linux, this prefers `pipewire`, `jack`, and `pulseaudio` devices over `alsa`.
 	pub fn new() -> Result<Player> {
 		let device = {
 			let mut selected_host = cpal::default_host();
@@ -191,9 +208,77 @@ impl Player {
 			player_state,
 		})
 	}
-	pub fn play_song(&self, song: &Song) -> Result<()> {
-		self.player_state.next_song(song)
+	/// Set the song that will play after the current song is over (or immediately if no song is currently playing)
+	///
+	/// Note that right now, this function may block for multiple seconds while the song's sample rate is being converted using [`samplerate`].
+	pub fn play_song_next(&self, song: &Song) -> Result<()> {
+		self.player_state.play_song(song)
 	}
+	/// Start playing a song immediately, while discarding any song that might have been queued to play next.
+	///
+	/// Note that right now, this function may block for multiple seconds while the song's sample rate is being converted using [`samplerate`].
+	pub fn play_song_now(&self, song: &Song) -> Result<()> {
+		self.player_state.stop();
+		self.player_state.play_song(song)?;
+		Ok(())
+	}
+	/// Stop playing any songs and remove a next song if it has been queued.
+	///
+	/// Note that this does not pause playback (use [`set_playing`](Player::set_playing)), meaning new songs will play upon adding them.
+	pub fn stop(&self) {
+		self.player_state.stop();
+	}
+	/// Skip the currently playing song (i.e. stop playing it immediately.
+	///
+	/// This will immediately start playing the next song if it exists.
+	pub fn skip(&self) {
+		self.player_state.skip();
+	}
+	fn get_duration_per_sample(&self) -> Duration {
+		Duration::from_nanos(
+			1000000000
+				/ (self.player_state.sample_rate as u64 * self.player_state.channel_count as u64),
+		)
+	}
+	/// Return the current playback position, if there is currently a song playing (see [`has_current_song`](Player::has_current_song))
+	///
+	/// See also [`seek`](Player::seek)
+	pub fn get_playback_position(&self) -> Option<(Duration, Duration)> {
+		self.player_state.get_position().map(|(current, total)| {
+			let duration_per_sample = self.get_duration_per_sample();
+			(
+				duration_per_sample * current as u32,
+				duration_per_sample * total as u32,
+			)
+		})
+	}
+	/// Set the current playback position if there is a song playing
+	///
+	/// Returns whether the seek was successful (whether there was a song to seek).
+	/// Note that seeking past the end of the song will be successful and will cause playback to begin at the _beginning_ of the next song.
+	///
+	/// See also [`get_playback_position`](Player::get_playback_position)
+	pub fn seek(&self, time: Duration) -> bool {
+		let duration_per_sample = self.get_duration_per_sample();
+		let samples = (time.as_nanos() / duration_per_sample.as_nanos()) as usize;
+		self.player_state.seek(samples)
+	}
+	/// Sets whether playback is enabled or not, without touching the song queue.
+	///
+	/// See also [`is_playing`](Player::is_playing)
+	pub fn set_playing(&self, playing: bool) {
+		self.player_state.set_playing(playing);
+	}
+	/// Returns whether playback is currently paused
+	///
+	/// See also [`set_playing`](Player::set_playing)
+	pub fn is_playing(&self) -> bool {
+		*self.player_state.playing.read().unwrap()
+	}
+	/// Returns whether there is a song queued to play next after the current song has finished
+	///
+	/// If you want to check whether there is currently a song playing, use [`has_current_song`][Player::has_current_song] and [`is_playing`][Player::is_playing].
+	/// This should always be queried before calling [`play_song_next`](Player::play_song_next) if you do not intend on replacing the song currently in the queue.
 	pub fn has_next_song(&self) -> bool {
 		self.player_state
 			.next_samples
@@ -201,7 +286,10 @@ impl Player {
 			.expect("Next song mutex poisoned.")
 			.is_some()
 	}
-	pub fn has_song(&self) -> bool {
+	/// Returns whether there is a song currently playing
+	///
+	/// Note that this **does not** indicate whether the current song is actively being played or paused, for that functionality you can use [is_playing](Self::is_playing).
+	pub fn has_current_song(&self) -> bool {
 		self.player_state
 			.playback
 			.read()
@@ -210,6 +298,7 @@ impl Player {
 	}
 }
 
+/// Represents a single song that has been decoded into memory, can be played in a <Player> struct.
 #[derive(Debug, Clone)]
 pub struct Song {
 	samples: Vec<Vec<f32>>,
@@ -218,6 +307,7 @@ pub struct Song {
 }
 
 impl Song {
+	/// Creates a new song using a reader of some kind and a type hint (the Symphonia hint type has been reexported at the crate root for convenience).
 	pub fn new(reader: Box<dyn MediaSource>, hint: &Hint) -> Result<Song> {
 		let media_source_stream =
 			MediaSourceStream::new(reader, MediaSourceStreamOptions::default());
@@ -273,6 +363,7 @@ impl Song {
 		}
 		song.ok_or_else(|| Report::msg("No song data decoded."))
 	}
+	/// Creates a [Song] by reading data from a file and using the file's extension as a format type hint.
 	pub fn from_file<P: AsRef<std::path::Path>>(path: P) -> Result<Song> {
 		let mut hint = Hint::new();
 		if let Some(extension) = path.as_ref().extension().and_then(|s| s.to_str()) {
@@ -280,10 +371,4 @@ impl Song {
 		}
 		Self::new(Box::new(std::fs::File::open(path)?), &hint)
 	}
-}
-
-#[cfg(test)]
-mod tests {
-	#[test]
-	fn it_works() {}
 }
