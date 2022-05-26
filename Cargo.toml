@@ -1,0 +1,11 @@
+[package]
+name = "playback-rs"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+color-eyre = "0.6"
+cpal = "0.13"
+log = "0.4"
+samplerate = "0.2"
+symphonia = { version="0.5", features=["isomp4", "aac", "alac", "mp3"] }
