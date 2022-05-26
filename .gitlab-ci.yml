@@ -17,10 +17,10 @@ lint:
     - rustup component add clippy
     - cargo clippy
 
-test:
-  stage: check
-  script:
-    - apt-get update
-    - apt-get install cmake libasound-dev libsamplerate0-dev -y
-    - curl 'https://files.ben1jen.ca/song.mp3' -o song.mp3 && curl 'https://files.ben1jen.ca/song2.flac' -o song2.flac
-    - cargo test
+#test:
+#  stage: check
+#  script:
+#    - apt-get update
+#    - apt-get install cmake libasound-dev libsamplerate0-dev -y
+#    - curl 'https://files.ben1jen.ca/song.mp3' -o song.mp3 && curl 'https://files.ben1jen.ca/song2.flac' -o song2.flac
+#    - cargo test

@@ -1,14 +1,14 @@
 [package]
 name = "playback-rs"
 description = "A very simple audio/song loading and playing library."
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 authors = ["Ben Heard <benpheard@gmail.com>"]
 license = "ISC"
 readme = "readme.md"
 repository = "https://gitlab.101100.ca/ben1jen/playback-rs/"
-keywords = ["music", "audio", "sound", "playback", "decoder", "multimedia", "media", "song", "player", "decode", "cpal", "symphonia", "samplerate"]
-categories = ["music", "audio", "sound", "playback", "decoder", "multimedia", "media"]
+keywords = ["music", "sound", "playback", "decode", "decoder"]
+categories = ["multimedia", "multimedia::audio", "multimedia::encoding"]
 
 [dependencies]
 color-eyre = "0.6"
