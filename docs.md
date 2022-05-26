@@ -24,28 +24,34 @@ use playback_rs::{Player, Song};
 fn main() {
 	let player = Player::new().expect("Failed to open an audio output."); // Create a player to play audio with cpal.
 	let song = Song::from_file("song.mp3").expect("Failed to load or decode the song."); // Decode a song from a file
-	player.play_song_next(&song).unwrap("Failed to play the song");
+	player.play_song_next(&song).expect("Failed to play the song");
 	let song2 = Song::from_file("song2.flac").expect("Failed to load or decode the other song.");
 	player.play_song_next(&song).expect("Failed to play the other song");
 	
+	# #[cfg(not(doctest))]
 	std::thread::sleep(std::time::Duration::from_secs(5));
 	// Query playback position
 	println!("Playback position: {:?}", player.get_playback_position());
 
 	// Pause the song for a second
 	player.set_playing(false);
+	# #[cfg(not(doctest))]
 	std::thread::sleep(std::time::Duration::from_secs(1));
 	player.set_playing(true);
+	# #[cfg(not(doctest))]
 	std::thread::sleep(std::time::Duration::from_secs(5));
 	// Seek forward to 30 seconds
 	player.seek(std::time::Duration::from_secs(30));
+	# #[cfg(not(doctest))]
 	std::thread::sleep(std::time::Duration::from_secs(10));
 	// Skip to the second song
 	player.skip();
 	
 	// Wait until the song has ended to exit
-	while player.has_song() {
+	# #[cfg(not(doctest))]
+	while player.has_current_song() {
 		std::thread::sleep(std::time::Duration::from_secs(1));
 	}
+	// Playback will automatically stop when the Player is dropped
 }
 ```
