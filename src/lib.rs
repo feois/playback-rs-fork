@@ -131,6 +131,14 @@ impl PlayerState {
 			false
 		}
 	}
+	fn force_remove_next_song(&self) {
+		let (mut playback, mut next_song) = (self.playback.write().unwrap(), self.next_samples.write().unwrap());
+		if next_song.is_some() {
+			*next_song = None;
+		} else {
+			*playback = None;
+		}
+	}
 }
 
 /// Manages playback of [Song]s through [cpal] and sample conversion through [samplerate].
@@ -220,6 +228,23 @@ impl Player {
 	pub fn play_song_now(&self, song: &Song) -> Result<()> {
 		self.player_state.stop();
 		self.player_state.play_song(song)?;
+		Ok(())
+	}
+	/// Used to replace the next song, or the current song if there is no next song.
+	///
+	/// This will remove the current song if no next song exists to avoid a race condition in case the current song ends after you have determined that the next song must be replaced but before you call this function.
+	/// See also [`force_remove_next_song`](Player::force_remove_next_song)
+	pub fn force_replace_next_song(&self, song: &Song) -> Result<()> {
+		self.player_state.force_remove_next_song();
+		self.player_state.play_song(song)?;
+		Ok(())
+	}
+	/// Used to remove the next song, or the current song if there is no next song.
+	///
+	/// This will remove the current song if no next song exists to avoid a race condition in case the current song ends after you have determined that the next song must be replaced but before you call this function.
+	/// See also [`force_replace_next_song`](Player::force_replace_next_song)
+	pub fn force_remove_next_song(&self) -> Result<()> {
+		self.player_state.force_remove_next_song();
 		Ok(())
 	}
 	/// Stop playing any songs and remove a next song if it has been queued.
