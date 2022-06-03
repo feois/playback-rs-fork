@@ -16,6 +16,7 @@ fn main() -> Result<()> {
 		println!("Queueing next song '{}'...", next_song);
 		player.play_song_next(&song)?;
 	}
+	println!("Waiting for songs to finish.");
 	while player.has_current_song() {
 		std::thread::sleep(std::time::Duration::from_millis(100));
 	}

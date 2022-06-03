@@ -2,7 +2,10 @@
 #![doc(issue_tracker_base_url = "https://gitlab.101100.ca/ben1jen/playback-rs/-/issues")]
 #![doc = include_str!("../docs.md")]
 
-use std::sync::{Arc, RwLock};
+use std::collections::VecDeque;
+use std::sync::mpsc::{self, Receiver};
+use std::sync::{Arc, Mutex, RwLock};
+use std::thread;
 use std::time::Duration;
 
 use color_eyre::eyre::{Report, Result};
@@ -20,12 +23,102 @@ use symphonia::default;
 
 pub use symphonia::core::probe::Hint;
 
-type PlaybackState = (Vec<f32>, usize);
+#[derive(Debug)]
+struct DecodingSong {
+	channel: Mutex<Receiver<Option<Vec<f32>>>>,
+	done: bool,
+	buffer: VecDeque<f32>,
+	len: usize,
+}
+
+impl DecodingSong {
+	fn new(song: &Song, sample_rate: u32, channel_count: usize) -> Result<DecodingSong> {
+		const DECODE_BLOCK_SIZE: usize = 1029 * 48000 / 44100 * 2; // Should produce blocks of at least about 1024 samples x 2 channels.
+
+		// Reorder samples, this is really fast and gets us ownership over the song
+		let samples = {
+			let sample_count = song.samples[0].len();
+			let mut samples = vec![0.0; channel_count * sample_count];
+			for chan in 0..channel_count {
+				if chan < 2 || chan < song.samples.len() {
+					for sample in 0..sample_count {
+						samples[sample * channel_count as usize + chan] =
+							song.samples[chan % song.samples.len()][sample]
+					}
+				};
+			}
+			samples
+		};
+		let len = samples.len() * sample_rate as usize / song.sample_rate as usize;
+		let (tx, rx) = mpsc::channel();
+		let source_sample_rate = song.sample_rate;
+		thread::spawn(move || {
+			let converter = Samplerate::new(
+				ConverterType::SincFastest,
+				source_sample_rate,
+				sample_rate,
+				channel_count,
+			)
+			.unwrap();
+			// TODO: Error channel?
+			let last = samples.len() / DECODE_BLOCK_SIZE;
+			for i in 0..=last {
+				let pos = i * DECODE_BLOCK_SIZE;
+				let samples = &samples[pos..((pos + DECODE_BLOCK_SIZE).min(samples.len()))];
+				let processed_samples = if i == last {
+					converter.process_last(samples)
+				} else {
+					converter.process(samples)
+				}
+				.unwrap();
+				// Dropping the other end of the channel will cause this to error, which will stop decoding.
+				if tx.send(Some(processed_samples)).is_err() {
+					break;
+				}
+			}
+		});
+		Ok(DecodingSong {
+			channel: Mutex::new(rx),
+			done: false,
+			buffer: VecDeque::new(),
+			len,
+		})
+	}
+	fn read_samples(&mut self, count: usize) -> (Vec<f32>, bool) {
+		let channel = self.channel.lock().unwrap();
+		if !self.done {
+			while self.buffer.len() < count {
+				if let Some(buf) = channel.recv().unwrap() {
+					self.buffer.append(&mut VecDeque::from(buf));
+				} else {
+					self.done = true;
+					break;
+				}
+			}
+		}
+		let mut vec = Vec::new();
+		let mut done = false;
+		for _i in 0..count {
+			if let Some(sample) = self.buffer.pop_front() {
+				vec.push(sample);
+			} else {
+				done = true;
+				break;
+			}
+		}
+		(vec, done)
+	}
+	fn len(&self) -> usize {
+		self.len
+	}
+}
+
+type PlaybackState = (DecodingSong, usize);
 
 #[derive(Clone)]
 struct PlayerState {
 	playback: Arc<RwLock<Option<PlaybackState>>>,
-	next_samples: Arc<RwLock<Option<Vec<f32>>>>,
+	next_samples: Arc<RwLock<Option<DecodingSong>>>,
 	playing: Arc<RwLock<bool>>,
 	sample_rate: u32,
 	channel_count: usize,
@@ -47,27 +140,27 @@ impl PlayerState {
 		}
 		if *self.playing.read().unwrap() {
 			let mut playback = self.playback.write().unwrap();
-			let mut done = false;
 			if playback.is_none() {
 				if let Some(new_samples) = self.next_samples.write().unwrap().take() {
 					*playback = Some((new_samples, 0));
 				}
 			}
-			if let Some((samples, pos)) = playback.as_mut() {
+			let mut done = false;
+			if let Some((decoding_song, pos)) = playback.as_mut() {
 				let mut neg_offset = 0;
+				let (samples, is_final) = decoding_song.read_samples(data.len());
+				done = is_final;
 				for (i, sample) in data.iter_mut().enumerate() {
-					if *pos + i >= samples.len() {
+					if i >= samples.len() {
 						if let Some(new_samples) = self.next_samples.write().unwrap().take() {
-							*samples = new_samples;
+							*decoding_song = new_samples;
 							neg_offset = i;
 							*pos = 0;
 						} else {
-							done = true;
+							break;
 						}
 					}
-					if *pos + i < samples.len() {
-						*sample = Sample::from(&samples[*pos + i]);
-					}
+					*sample = Sample::from(&samples[i]);
 				}
 				*pos += data.len() - neg_offset;
 			}
@@ -76,30 +169,8 @@ impl PlayerState {
 			}
 		}
 	}
-	fn decode_song(&self, song: &Song) -> Result<Vec<f32>> {
-		let converter = Samplerate::new(
-			ConverterType::SincFastest,
-			song.sample_rate,
-			self.sample_rate,
-			self.channel_count,
-		)?;
-		let samples = {
-			let sample_count = song.samples[0].len();
-			let mut samples = vec![0.0; self.channel_count * sample_count];
-			for chan in 0..self.channel_count {
-				if chan < 2 || chan < song.samples.len() {
-					for sample in 0..sample_count {
-						samples[sample * self.channel_count as usize + chan] =
-							song.samples[chan % song.samples.len()][sample]
-					}
-				};
-			}
-			samples
-		};
-		let t = std::time::Instant::now();
-		let processed_samples = converter.process_last(&samples)?;
-		info!("Converted song sample rate in {:?}", t.elapsed());
-		Ok(processed_samples)
+	fn decode_song(&self, song: &Song) -> Result<DecodingSong> {
+		DecodingSong::new(song, self.sample_rate, self.channel_count)
 	}
 	fn stop(&self) {
 		*self.next_samples.write().unwrap() = None;
@@ -132,7 +203,10 @@ impl PlayerState {
 		}
 	}
 	fn force_remove_next_song(&self) {
-		let (mut playback, mut next_song) = (self.playback.write().unwrap(), self.next_samples.write().unwrap());
+		let (mut playback, mut next_song) = (
+			self.playback.write().unwrap(),
+			self.next_samples.write().unwrap(),
+		);
 		if next_song.is_some() {
 			*next_song = None;
 		} else {
@@ -217,14 +291,10 @@ impl Player {
 		})
 	}
 	/// Set the song that will play after the current song is over (or immediately if no song is currently playing)
-	///
-	/// Note that right now, this function may block for multiple seconds while the song's sample rate is being converted using [`samplerate`].
 	pub fn play_song_next(&self, song: &Song) -> Result<()> {
 		self.player_state.play_song(song)
 	}
 	/// Start playing a song immediately, while discarding any song that might have been queued to play next.
-	///
-	/// Note that right now, this function may block for multiple seconds while the song's sample rate is being converted using [`samplerate`].
 	pub fn play_song_now(&self, song: &Song) -> Result<()> {
 		self.player_state.stop();
 		self.player_state.play_song(song)?;
@@ -311,12 +381,17 @@ impl Player {
 			.expect("Next song mutex poisoned.")
 			.is_some()
 	}
-	/// Returns whether there is a song currently playing
+	/// Returns whether there is a song currently playing (or about to start playing next audio frame)
 	///
 	/// Note that this **does not** indicate whether the current song is actively being played or paused, for that functionality you can use [is_playing](Self::is_playing).
 	pub fn has_current_song(&self) -> bool {
 		self.player_state
 			.playback
+			.read()
+			.expect("Current song mutex poisoned.")
+			.is_some() || self
+			.player_state
+			.next_samples
 			.read()
 			.expect("Next song mutex poisoned.")
 			.is_some()
