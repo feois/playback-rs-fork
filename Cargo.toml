@@ -1,7 +1,7 @@
 [package]
 name = "playback-rs"
 description = "A very simple audio/song loading and playing library."
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 authors = ["Ben Heard <benpheard@gmail.com>"]
 license = "ISC"

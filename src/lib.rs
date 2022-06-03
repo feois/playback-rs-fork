@@ -84,11 +84,11 @@ impl DecodingSong {
 			len,
 		})
 	}
-	fn read_samples(&mut self, count: usize) -> (Vec<f32>, bool) {
+	fn read_samples(&mut self, pos: usize, count: usize) -> (Vec<f32>, bool) {
 		let channel = self.channel.lock().unwrap();
 		if !self.done {
-			while self.buffer.len() < count {
-				if let Some(buf) = channel.recv().unwrap() {
+			while self.buffer.len() < pos + count {
+				if let Ok(Some(buf)) = channel.recv() {
 					self.buffer.append(&mut VecDeque::from(buf));
 				} else {
 					self.done = true;
@@ -98,9 +98,9 @@ impl DecodingSong {
 		}
 		let mut vec = Vec::new();
 		let mut done = false;
-		for _i in 0..count {
-			if let Some(sample) = self.buffer.pop_front() {
-				vec.push(sample);
+		for i in 0..count {
+			if let Some(sample) = self.buffer.get(pos + i) {
+				vec.push(*sample);
 			} else {
 				done = true;
 				break;
@@ -148,7 +148,7 @@ impl PlayerState {
 			let mut done = false;
 			if let Some((decoding_song, pos)) = playback.as_mut() {
 				let mut neg_offset = 0;
-				let (samples, is_final) = decoding_song.read_samples(data.len());
+				let (samples, is_final) = decoding_song.read_samples(*pos, data.len());
 				done = is_final;
 				for (i, sample) in data.iter_mut().enumerate() {
 					if i >= samples.len() {
