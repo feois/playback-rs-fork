@@ -148,21 +148,23 @@ impl PlayerState {
 			let mut done = false;
 			if let Some((decoding_song, pos)) = playback.as_mut() {
 				let mut neg_offset = 0;
-				let (samples, is_final) = decoding_song.read_samples(*pos, data.len());
-				done = is_final;
+				let data_len = data.len();
+				let (mut samples, mut is_final) = decoding_song.read_samples(*pos, data_len);
 				for (i, sample) in data.iter_mut().enumerate() {
 					if i >= samples.len() {
 						if let Some(new_samples) = self.next_samples.write().unwrap().take() {
 							*decoding_song = new_samples;
 							neg_offset = i;
 							*pos = 0;
+							(samples, is_final) = decoding_song.read_samples(*pos, data_len - neg_offset);
 						} else {
 							break;
 						}
 					}
-					*sample = Sample::from(&samples[i]);
+					*sample = Sample::from(&samples[i - neg_offset]);
 				}
-				*pos += data.len() - neg_offset;
+				*pos += data_len - neg_offset;
+				done = is_final;
 			}
 			if done {
 				*playback = None;
