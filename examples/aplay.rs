@@ -4,7 +4,13 @@ use playback_rs::{Player, Song};
 
 fn main() -> Result<()> {
 	color_eyre::install()?;
-	simplelog::TermLogger::init(simplelog::LevelFilter::Info, simplelog::Config::default(), simplelog::TerminalMode::Mixed, simplelog::ColorChoice::Auto).unwrap();
+	simplelog::TermLogger::init(
+		simplelog::LevelFilter::Info,
+		simplelog::Config::default(),
+		simplelog::TerminalMode::Mixed,
+		simplelog::ColorChoice::Auto,
+	)
+	.unwrap();
 
 	let filenames = std::env::args().skip(1);
 	let player = Player::new()?;

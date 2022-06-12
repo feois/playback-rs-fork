@@ -156,7 +156,8 @@ impl PlayerState {
 							*decoding_song = new_samples;
 							neg_offset = i;
 							*pos = 0;
-							(samples, is_final) = decoding_song.read_samples(*pos, data_len - neg_offset);
+							(samples, is_final) =
+								decoding_song.read_samples(*pos, data_len - neg_offset);
 						} else {
 							break;
 						}
@@ -255,8 +256,7 @@ impl Player {
 			);
 			selected_device
 		};
-		let mut supported_configs = device
-			.supported_output_configs()?.collect::<Vec<_>>();
+		let mut supported_configs = device.supported_output_configs()?.collect::<Vec<_>>();
 		fn rank_supported_config(config: &SupportedStreamConfigRange) -> u32 {
 			let chans = config.channels() as u32;
 			let channel_rank = match chans {
@@ -283,20 +283,20 @@ impl Player {
 			};
 			channel_rank + min_sample_rank + max_sample_rank + sample_format_rank
 		}
-		supported_configs.sort_by(|c_1, c_2| {
-			rank_supported_config(c_2).cmp(&rank_supported_config(c_1))
-		});
+		supported_configs.sort_by_key(|c_2| std::cmp::Reverse(rank_supported_config(c_2)));
 		info!("Configs: {:?}", supported_configs);
 
 		let supported_config = supported_configs
-			.into_iter().next()
+			.into_iter()
+			.next()
 			.ok_or_else(|| Report::msg("No supported output config."))?;
 
-		let sample_rate_range = supported_config.min_sample_rate().0..supported_config.max_sample_rate().0;
+		let sample_rate_range =
+			supported_config.min_sample_rate().0..supported_config.max_sample_rate().0;
 		let supported_config = if sample_rate_range.contains(&48000) {
 			supported_config.with_sample_rate(cpal::SampleRate(48000))
 		} else if sample_rate_range.contains(&44100) {
-			supported_config.with_sample_rate(cpal::SampleRate(48000))
+			supported_config.with_sample_rate(cpal::SampleRate(44100))
 		} else if sample_rate_range.end <= 48000 {
 			supported_config.with_sample_rate(cpal::SampleRate(sample_rate_range.end))
 		} else {
