@@ -331,6 +331,8 @@ impl Player {
 				)?,
 			}
 		};
+		// Not all platforms automatically run the stream upon creation, so do that here.
+		stream.play()?;
 		Ok(Player {
 			_stream: Box::new(stream),
 			player_state,
