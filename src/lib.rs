@@ -284,7 +284,6 @@ impl Player {
 			channel_rank + min_sample_rank + max_sample_rank + sample_format_rank
 		}
 		supported_configs.sort_by_key(|c_2| std::cmp::Reverse(rank_supported_config(c_2)));
-		info!("Configs: {:?}", supported_configs);
 
 		let supported_config = supported_configs
 			.into_iter()
@@ -308,7 +307,10 @@ impl Player {
 		let config = supported_config.into();
 		let err_fn = |err| error!("A playback error has occured! {}", err);
 		let player_state = PlayerState::new(channel_count as u32, sample_rate)?;
-		info!("SR, CC: {}, {}", sample_rate, channel_count);
+		info!(
+			"SR, CC, SF: {}, {}, {:?}",
+			sample_rate, channel_count, sample_format
+		);
 		let stream = {
 			let player_state = player_state.clone();
 			match sample_format {
