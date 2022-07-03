@@ -1,7 +1,7 @@
 [package]
 name = "playback-rs"
 description = "A very simple audio/song loading and playing library."
-version = "0.2.3"
+version = "0.2.4"
 edition = "2021"
 authors = ["Ben Heard <benpheard@gmail.com>"]
 license = "ISC"
@@ -16,7 +16,7 @@ cpal = "0.13"
 log = "0.4"
 samplerate = "0.2"
 simplelog = { version="0.12", optional=true }
-symphonia = { version="0.5", features=["isomp4", "aac", "alac", "mp3"] }
+symphonia = { git="https://github.com/101100/Symphonia.git", branch="patch-1", features=["isomp4", "aac", "alac", "mp3"] }
 
 [[example]]
 name = "aplay"
