@@ -16,7 +16,7 @@ cpal = "0.13"
 log = "0.4"
 samplerate = "0.2"
 simplelog = { version="0.12", optional=true }
-symphonia = { git="https://github.com/101100/Symphonia.git", branch="patch-1", features=["isomp4", "aac", "alac", "mp3"] }
+symphonia = { version="0.5", features=["isomp4", "aac", "alac", "mp3"] }
 
 [[example]]
 name = "aplay"
