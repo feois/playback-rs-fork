@@ -11,7 +11,7 @@ use std::time::Duration;
 use color_eyre::eyre::{Report, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Sample, SampleFormat, SupportedStreamConfigRange};
-use log::{error, info};
+use log::{error, info, warn};
 use samplerate::{ConverterType, Samplerate};
 use symphonia::core::audio::SampleBuffer;
 use symphonia::core::codecs::DecoderOptions;
@@ -497,12 +497,16 @@ impl Song {
 						});
 						song.as_mut().unwrap()
 					};
-					let mut samples = SampleBuffer::new(decoded.frames() as u64, spec);
-					samples.copy_interleaved_ref(decoded);
-					for frame in samples.samples().chunks(spec.channels.count()) {
-						for (chan, sample) in frame.iter().enumerate() {
-							song.samples[chan].push(*sample)
+					if decoded.frames() > 0 {
+						let mut samples = SampleBuffer::new(decoded.frames() as u64, spec);
+						samples.copy_interleaved_ref(decoded);
+						for frame in samples.samples().chunks(spec.channels.count()) {
+							for (chan, sample) in frame.iter().enumerate() {
+								song.samples[chan].push(*sample)
+							}
 						}
+					} else {
+						warn!("Empty packet encountered while loading song!");
 					}
 				}
 				Err(SymphoniaError::IoError(_)) => break,
