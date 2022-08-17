@@ -1,4 +1,5 @@
 use color_eyre::eyre::Result;
+use log::info;
 
 use playback_rs::{Player, Song};
 
@@ -15,19 +16,25 @@ fn main() -> Result<()> {
 	let filenames = std::env::args().skip(1);
 	let player = Player::new()?;
 	for next_song in filenames {
-		println!("Loading song '{}'...", next_song);
+		info!("Loading song '{}'...", next_song);
 		let song = Song::from_file(&next_song)?;
+		info!("Waiting for queue space to become available...");
 		while player.has_next_song() {
 			std::thread::sleep(std::time::Duration::from_millis(100));
 		}
-		println!("Queueing next song '{}'...", next_song);
+		info!(
+			"Queueing next song '{}' with {:?} left in current song...",
+			next_song,
+			player.get_playback_position()
+		);
 		player.play_song_next(&song)?;
+		info!("Queued.");
 	}
-	println!("Waiting for songs to finish.");
+	info!("Waiting for songs to finish.");
 	while player.has_current_song() {
 		std::thread::sleep(std::time::Duration::from_millis(100));
 	}
-	println!("Exiting.");
+	info!("Exiting.");
 
 	Ok(())
 }
