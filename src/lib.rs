@@ -3,14 +3,14 @@
 #![doc = include_str!("../docs.md")]
 
 use std::collections::VecDeque;
-use std::sync::mpsc::{self, Receiver};
+use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 use std::time::Duration;
 
 use color_eyre::eyre::{Report, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{Sample, SampleFormat, SupportedStreamConfigRange};
+use cpal::{FrameCount, Sample, SampleFormat, SupportedBufferSize, SupportedStreamConfigRange};
 use log::{error, info, warn};
 use samplerate::{ConverterType, Samplerate};
 use symphonia::core::audio::SampleBuffer;
@@ -23,18 +23,29 @@ use symphonia::default;
 
 pub use symphonia::core::probe::Hint;
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct SongRequest {
+	samples: usize,
+	speed: f32,
+}
+
 #[derive(Debug)]
 struct DecodingSong {
-	channel: Mutex<Receiver<Option<Vec<f32>>>>,
+	requests_channel: SyncSender<SongRequest>,
+	samples_channel: Mutex<Receiver<Option<Vec<f32>>>>,
 	done: bool,
+	target_buffer_size: u32,
 	buffer: VecDeque<f32>,
 	len: usize,
 }
 
 impl DecodingSong {
-	fn new(song: &Song, sample_rate: u32, channel_count: usize) -> Result<DecodingSong> {
-		const DECODE_BLOCK_SIZE: usize = 1029 * 48000 / 44100 * 2; // Should produce blocks of at least about 1024 samples x 2 channels.
-
+	fn new(
+		song: &Song,
+		sample_rate: u32,
+		channel_count: usize,
+		target_buffer_size: u32,
+	) -> Result<DecodingSong> {
 		// Reorder samples, this is really fast and gets us ownership over the song
 		let samples = {
 			let sample_count = song.samples[0].len();
@@ -50,42 +61,69 @@ impl DecodingSong {
 			samples
 		};
 		let len = samples.len() * sample_rate as usize / song.sample_rate as usize;
-		let (tx, rx) = mpsc::channel();
+		let (rtx, rrx) = mpsc::sync_channel::<SongRequest>(10);
+		let (stx, srx) = mpsc::channel();
 		let source_sample_rate = song.sample_rate;
+		let (etx, erx) = mpsc::channel();
 		thread::spawn(move || {
-			let converter = Samplerate::new(
+			let mut converter = match Samplerate::new(
 				ConverterType::SincBestQuality,
 				source_sample_rate,
 				sample_rate,
 				channel_count,
-			)
-			.unwrap();
-			// TODO: Error channel?
-			let last = samples.len() / DECODE_BLOCK_SIZE;
-			for i in 0..=last {
-				let pos = i * DECODE_BLOCK_SIZE;
-				let samples = &samples[pos..((pos + DECODE_BLOCK_SIZE).min(samples.len()))];
-				let processed_samples = if i == last {
+			) {
+				Ok(converter) => {
+					etx.send(Ok(())).unwrap();
+					converter
+				}
+				Err(e) => {
+					etx.send(Err(e)).unwrap();
+					return;
+				}
+			};
+			let mut current_sample = 0;
+			let mut last_target_rate = sample_rate;
+			while current_sample <= samples.len() {
+				let request = rrx.recv().unwrap();
+				let target_rate = (sample_rate as f32 * request.speed) as u32;
+				if target_rate != last_target_rate {
+					converter.set_to_rate(target_rate);
+				}
+				last_target_rate = target_rate;
+				let last_sample = (current_sample
+					+ request.samples * (sample_rate as usize) / (source_sample_rate as usize))
+					.min(samples.len());
+				let samples = &samples[current_sample..last_sample];
+				current_sample = last_sample;
+				let processed_samples = match if last_sample == samples.len() {
 					converter.process_last(samples)
 				} else {
 					converter.process(samples)
-				}
-				.unwrap();
+				} {
+					Ok(samples) => samples,
+					Err(e) => {
+						error!("Error converting sample rate: {e}");
+						vec![0.0; request.samples * channel_count]
+					}
+				};
 				// Dropping the other end of the channel will cause this to error, which will stop decoding.
-				if tx.send(Some(processed_samples)).is_err() {
+				if stx.send(Some(processed_samples)).is_err() {
 					break;
 				}
 			}
 		});
+		erx.recv()??;
 		Ok(DecodingSong {
-			channel: Mutex::new(rx),
+			requests_channel: rtx,
+			samples_channel: Mutex::new(srx),
 			done: false,
+			target_buffer_size,
 			buffer: VecDeque::new(),
 			len,
 		})
 	}
 	fn read_samples(&mut self, pos: usize, count: usize) -> (Vec<f32>, bool) {
-		let channel = self.channel.lock().unwrap();
+		let channel = self.samples_channel.lock().unwrap();
 		if !self.done {
 			while self.buffer.len() < pos + count {
 				if let Ok(Some(buf)) = channel.recv() {
@@ -122,16 +160,18 @@ struct PlayerState {
 	playing: Arc<RwLock<bool>>,
 	sample_rate: u32,
 	channel_count: usize,
+	buffer_size: u32,
 }
 
 impl PlayerState {
-	fn new(channel_count: u32, sample_rate: u32) -> Result<PlayerState> {
+	fn new(channel_count: u32, sample_rate: u32, buffer_size: FrameCount) -> Result<PlayerState> {
 		Ok(PlayerState {
 			playback: Arc::new(RwLock::new(None)),
 			next_samples: Arc::new(RwLock::new(None)),
 			playing: Arc::new(RwLock::new(true)),
 			channel_count: channel_count as usize,
 			sample_rate,
+			buffer_size,
 		})
 	}
 	fn write_samples<T: Sample>(&self, data: &mut [T]) {
@@ -173,7 +213,7 @@ impl PlayerState {
 		}
 	}
 	fn decode_song(&self, song: &Song) -> Result<DecodingSong> {
-		DecodingSong::new(song, self.sample_rate, self.channel_count)
+		DecodingSong::new(song, self.sample_rate, self.channel_count, self.buffer_size)
 	}
 	fn stop(&self) {
 		*self.next_samples.write().unwrap() = None;
@@ -304,9 +344,13 @@ impl Player {
 		let sample_format = supported_config.sample_format();
 		let sample_rate = supported_config.sample_rate().0;
 		let channel_count = supported_config.channels();
+		let buffer_size = match supported_config.buffer_size() {
+			SupportedBufferSize::Range { max, .. } => *max,
+			SupportedBufferSize::Unknown => 1024,
+		};
 		let config = supported_config.into();
 		let err_fn = |err| error!("A playback error has occured! {}", err);
-		let player_state = PlayerState::new(channel_count as u32, sample_rate)?;
+		let player_state = PlayerState::new(channel_count as u32, sample_rate, buffer_size)?;
 		info!(
 			"SR, CC, SF: {}, {}, {:?}",
 			sample_rate, channel_count, sample_format
@@ -331,7 +375,7 @@ impl Player {
 				)?,
 			}
 		};
-		// Not all platforms automatically run the stream upon creation, so do that here.
+		// Not all platforms (*cough cough* windows *cough*) automatically run the stream upon creation, so do that here.
 		stream.play()?;
 		Ok(Player {
 			_stream: Box::new(stream),

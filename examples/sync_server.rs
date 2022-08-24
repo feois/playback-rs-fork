@@ -16,7 +16,7 @@ fn main() -> Result<()> {
 		simplelog::ColorChoice::Auto,
 	)
 	.unwrap();
-	let listener = TcpListener::bind("127.0.0.1:3305")?;
+	let listener = TcpListener::bind("0.0.0.0:3305")?;
 
 	debug!("Listening for clients...");
 

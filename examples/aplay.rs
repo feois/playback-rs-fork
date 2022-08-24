@@ -15,11 +15,13 @@ fn main() -> Result<()> {
 
 	let filenames = std::env::args().skip(1);
 	let player = Player::new()?;
+	let start = Instant::now();
 	for next_song in filenames {
 		info!("Loading song '{}'...", next_song);
 		let song = Song::from_file(&next_song)?;
 		info!("Waiting for queue space to become available...");
 		while player.has_next_song() {
+			player.set_playback_speed(start.elapsed().as_secs_f32().sin()/4.0+0.5);
 			std::thread::sleep(std::time::Duration::from_millis(100));
 		}
 		info!(
