@@ -66,6 +66,7 @@ fn main() -> Result<()> {
 	}
 	let player = Player::new()?;
 	let mut filenames = std::env::args().skip(1).peekable();
+	let mut seek_next = true;
 	while player.has_current_song() || filenames.peek().is_some() {
 		if !player.has_next_song() {
 			if let Some(filename) = filenames.next() {
@@ -84,11 +85,15 @@ fn main() -> Result<()> {
 		let time_diff = current_time - playback_micros;
 		let speedup = (1.0 + time_diff as f64 / 1000000.0).clamp(0.9, 1.1);
 		info!("Current song time: {}µs, current (sync) time: {}µs, time diff: {:.2}s, speedup: {:.2}x, current adjustment: {}µs", playback_micros, current_time, time_diff as f64 / 1000000.0, speedup, adjustment);
-		if time_diff > 2000000 {
-			warn!("Time drift is larger than 2 seconds! Seeking...");
+
+		if time_diff > 1000000 || seek_next {
+			if !seek_next {
+				warn!("Time drift is larger than 1 second! Seeking...");
+			}
 			player.seek(Duration::from_micros(current_time.try_into()?));
+			seek_next = !seek_next;
 		} else {
-			// TODO: Set speedup
+			player.set_playback_speed(speedup as f32);
 		}
 
 		thread::sleep(Duration::from_millis(100));

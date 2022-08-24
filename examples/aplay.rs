@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use color_eyre::eyre::Result;
 use log::info;
 
@@ -6,7 +8,7 @@ use playback_rs::{Player, Song};
 fn main() -> Result<()> {
 	color_eyre::install()?;
 	simplelog::TermLogger::init(
-		simplelog::LevelFilter::Info,
+		simplelog::LevelFilter::Trace,
 		simplelog::Config::default(),
 		simplelog::TerminalMode::Mixed,
 		simplelog::ColorChoice::Auto,
@@ -21,7 +23,6 @@ fn main() -> Result<()> {
 		let song = Song::from_file(&next_song)?;
 		info!("Waiting for queue space to become available...");
 		while player.has_next_song() {
-			player.set_playback_speed(start.elapsed().as_secs_f32().sin()/4.0+0.5);
 			std::thread::sleep(std::time::Duration::from_millis(100));
 		}
 		info!(
