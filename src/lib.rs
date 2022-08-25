@@ -27,6 +27,7 @@ pub use symphonia::core::probe::Hint;
 struct SongRequest {
 	samples: usize,
 	speed: f32,
+	pos: usize,
 }
 
 #[derive(Debug)]
@@ -38,6 +39,7 @@ struct DecodingSong {
 	buffer: VecDeque<f32>,
 	len: usize,
 	playback_speed: f32,
+	last_request_size: usize,
 }
 
 impl DecodingSong {
@@ -87,6 +89,13 @@ impl DecodingSong {
 			let mut last_target_rate = sample_rate;
 			while current_sample <= samples.len() {
 				let request = rrx.recv().unwrap();
+				if ((current_sample as isize) - (request.pos as isize)).abs() > 4096 {
+					debug!(
+						"SEEKING: pos: {}, current_sample: {}",
+						request.pos, current_sample
+					);
+					current_sample = request.pos;
+				}
 				let target_rate = (sample_rate as f32 / request.speed) as u32;
 				let (min_target_rate, max_target_rate) =
 					(source_sample_rate / 256 + 1, source_sample_rate * 256 - 1);
@@ -132,6 +141,7 @@ impl DecodingSong {
 		rtx.send(SongRequest {
 			samples: target_buffer_size,
 			speed: playback_speed,
+			pos: 0,
 		})?;
 		Ok(DecodingSong {
 			requests_channel: rtx,
@@ -141,6 +151,7 @@ impl DecodingSong {
 			buffer: VecDeque::new(),
 			len,
 			playback_speed,
+			last_request_size: 0,
 		})
 	}
 	fn read_samples(&mut self, pos: usize, count: usize) -> (Vec<f32>, bool) {
@@ -148,12 +159,15 @@ impl DecodingSong {
 		self.target_buffer_size = self.target_buffer_size.max(count * 2);
 		let channel = self.samples_channel.lock().unwrap();
 		if self.target_buffer_size + count > self.buffer.len() {
+			let request_size = self.target_buffer_size + count - self.buffer.len();
 			self.requests_channel
 				.send(SongRequest {
-					samples: self.target_buffer_size + count - self.buffer.len(),
+					samples: request_size,
 					speed: self.playback_speed,
+					pos: pos + self.buffer.len() + self.last_request_size,
 				})
 				.unwrap(); // This shouldn't be able to fail unless the thread stops which shouldn't be able to happen.
+			self.last_request_size = request_size;
 		}
 		if !self.done {
 			// Fetch samples until there are none left to fetch and we have enough.

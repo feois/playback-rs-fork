@@ -19,7 +19,7 @@ fn main() -> Result<()> {
 	)
 	.unwrap();
 	debug!("Connecting...");
-	let mut stream = TcpStream::connect("127.0.0.1:3305")?;
+	let mut stream = TcpStream::connect("192.168.2.136:3305")?;
 	debug!("Connected!");
 
 	let start_time = Arc::new(Instant::now());
@@ -83,7 +83,7 @@ fn main() -> Result<()> {
 			.map(|(pp, _)| pp.as_micros() as i128)
 			.unwrap_or(0);
 		let time_diff = current_time - playback_micros;
-		let speedup = (1.0 + time_diff as f64 / 1000000.0).clamp(0.9, 1.1);
+		let speedup = (1.0 + time_diff as f64 / 10000000.0).clamp(0.99, 1.01);
 		info!("Current song time: {}µs, current (sync) time: {}µs, time diff: {:.2}s, speedup: {:.2}x, current adjustment: {}µs", playback_micros, current_time, time_diff as f64 / 1000000.0, speedup, adjustment);
 
 		if time_diff > 1000000 || seek_next {
