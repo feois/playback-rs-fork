@@ -1,5 +1,3 @@
-use std::time::Instant;
-
 use color_eyre::eyre::Result;
 use log::info;
 
@@ -17,7 +15,6 @@ fn main() -> Result<()> {
 
 	let filenames = std::env::args().skip(1);
 	let player = Player::new()?;
-	let start = Instant::now();
 	for next_song in filenames {
 		info!("Loading song '{}'...", next_song);
 		let song = Song::from_file(&next_song)?;

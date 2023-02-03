@@ -21,13 +21,11 @@ fn main() -> Result<()> {
 	let player = Player::new()?;
 	info!("Loading song '{}'...", song_filename);
 	let song = Song::from_file(&song_filename)?;
-	std::thread::sleep(Duration::from_millis(10000));
 	player.play_song_next(&song)?;
 	let start = Instant::now();
 	info!("Playing.");
 	while player.has_current_song() {
-		let playback_speed =
-			(start.elapsed().as_secs_f32() * std::f32::consts::PI * 2.0).sin() / 5.0 + 1.0;
+		let playback_speed = (start.elapsed().as_secs_f64()).sin() / 5.0 + 1.0;
 		player.set_playback_speed(playback_speed);
 		info!("Playback speed now: {playback_speed}");
 		std::thread::sleep(Duration::from_millis(10));

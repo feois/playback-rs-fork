@@ -4,6 +4,7 @@
 #![feature(c_variadic)]
 
 use std::collections::VecDeque;
+use std::num::Wrapping;
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError};
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
@@ -16,7 +17,7 @@ use cpal::{
 	Stream, StreamConfig, SupportedBufferSize, SupportedStreamConfigRange,
 };
 use log::{debug, error, info, warn};
-use samplerate::{ConverterType, Samplerate};
+use rubato::{InterpolationParameters, InterpolationType, Resampler, SincFixedOut, WindowFunction};
 use symphonia::core::audio::SampleBuffer;
 use symphonia::core::codecs::DecoderOptions;
 use symphonia::core::errors::Error as SymphoniaError;
@@ -28,166 +29,252 @@ use symphonia::default;
 pub use symphonia::core::probe::Hint;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-struct SongRequest {
-	samples: usize,
-	speed: f32,
-	pos: usize,
+struct SampleRequest {
+	frame: Option<(usize, Wrapping<u8>)>,
+	speed: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct SampleResult {
+	samples: Vec<f32>,
+	skip_count: Wrapping<u8>,
+	done: bool,
 }
 
 #[derive(Debug)]
 struct DecodingSong {
-	requests_channel: SyncSender<SongRequest>,
-	samples_channel: Mutex<Receiver<Option<Vec<f32>>>>,
-	done: bool,
-	target_buffer_size: usize,
+	total_frames: usize,
+	channel_count: usize,
+	song_sample_rate: usize,
+
+	playback_speed: Arc<RwLock<f64>>,
+	requests_channel: SyncSender<SampleRequest>,
+	samples_channel: Mutex<Receiver<SampleResult>>,
+	frames_per_resample: usize,
+
 	buffer: VecDeque<f32>,
-	len: usize,
-	playback_speed: f32,
-	last_request_size: usize,
+	pending_requests: usize,
+	done: bool,
+	had_output: bool,
+	expected_pos: usize,
+	skip_count: Wrapping<u8>,
 }
+
+const MAXIMUM_SPEED_ADJUSTMENT_FACTOR: f64 = 2.0;
+const MINIMUM_PLAYBACK_SPEED: f64 = 1.0 / MAXIMUM_SPEED_ADJUSTMENT_FACTOR;
+const MAXIMUM_PLAYBACK_SPEED: f64 = 1.0 * MAXIMUM_SPEED_ADJUSTMENT_FACTOR;
 
 impl DecodingSong {
 	fn new(
 		song: &Song,
-		sample_rate: u32,
+		player_sample_rate: usize,
 		channel_count: usize,
-		target_buffer_size: usize,
-		playback_speed: f32,
+		expected_buffer_size: usize,
+		playback_speed: Arc<RwLock<f64>>,
 	) -> Result<DecodingSong> {
-		// Reorder samples, this is really fast and gets us ownership over the song
-		let samples = {
-			let sample_count = song.samples[0].len();
-			let mut samples = vec![0.0; channel_count * sample_count];
-			for chan in 0..channel_count {
-				if chan < 2 || chan < song.samples.len() {
-					for sample in 0..sample_count {
-						samples[sample * channel_count as usize + chan] =
-							song.samples[chan % song.samples.len()][sample]
-					}
-				};
-			}
-			samples
-		};
-		let len = samples.len() * sample_rate as usize / song.sample_rate as usize;
-		let (rtx, rrx) = mpsc::sync_channel::<SongRequest>(10);
+		let frames = song.samples.clone();
+		let total_frames = frames[0].len();
+		let frames_per_resample = expected_buffer_size / channel_count;
+
+		let (rtx, rrx) = mpsc::sync_channel::<SampleRequest>(10);
 		let (stx, srx) = mpsc::channel();
-		let source_sample_rate = song.sample_rate;
+		let song_sample_rate = song.sample_rate as usize;
+		let resample_ratio = player_sample_rate as f64 / song.sample_rate as f64;
 		let (etx, erx) = mpsc::channel();
 		thread::spawn(move || {
-			let mut converter = match Samplerate::new(
-				ConverterType::SincBestQuality,
-				source_sample_rate,
-				sample_rate,
+			let sinc_len = 128;
+			let f_cutoff = 0.925_914_65;
+			let params = InterpolationParameters {
+				sinc_len,
+				f_cutoff,
+				interpolation: InterpolationType::Linear,
+				oversampling_factor: 2048,
+				window: WindowFunction::Blackman2,
+			};
+			let mut resampler = match SincFixedOut::<f32>::new(
+				resample_ratio,
+				MAXIMUM_SPEED_ADJUSTMENT_FACTOR,
+				params,
+				frames_per_resample, // SincFixedOut theoretically always gives us this much each time we process
 				channel_count,
 			) {
-				Ok(converter) => {
+				Ok(resampler) => {
 					etx.send(Ok(())).unwrap();
-					converter
+					resampler
 				}
 				Err(e) => {
 					etx.send(Err(e)).unwrap();
 					return;
 				}
 			};
-			let mut current_sample = 0;
-			let mut last_target_rate = sample_rate;
-			while current_sample <= samples.len() {
-				let request = rrx.recv().unwrap();
-				if ((current_sample as isize) - (request.pos as isize)).abs() > 4096 {
-					debug!(
-						"SEEKING: pos: {}, current_sample: {}",
-						request.pos, current_sample
-					);
-					current_sample = request.pos;
-				}
-				let target_rate = (sample_rate as f32 / request.speed) as u32;
-				let (min_target_rate, max_target_rate) =
-					(source_sample_rate / 256 + 1, source_sample_rate * 256 - 1);
-				if !(min_target_rate..=max_target_rate).contains(&target_rate) {
-					warn!("Can't achieve correct sample rate conversion for requested sample rate, expect problems!");
-				}
-				let target_rate = target_rate.clamp(min_target_rate, max_target_rate);
-				if target_rate != last_target_rate {
-					converter.set_to_rate(target_rate);
-				}
-				let last_sample = (current_sample
-					+ (request.samples + 1) * (source_sample_rate as usize)
-						/ (target_rate.max(last_target_rate) as usize)
-						/ channel_count * channel_count)
-					.min(samples.len());
-				let samples_input = &samples[current_sample..last_sample];
-				// trace!(
-				// 	"Got request for {} samples at a playback speed of {}. Using a target sample rate of {target_rate}, changed from {last_target_rate}. Sending {} samples to resampler as input.",
-				// 	request.samples, request.speed, samples_input.len()
-				// );
-				last_target_rate = target_rate;
-				current_sample = last_sample;
-				let processed_samples = match if last_sample == samples.len() {
-					converter.process_last(samples_input)
-				} else {
-					converter.process(samples_input)
-				} {
-					Ok(samples) => samples,
-					Err(e) => {
-						error!("Error converting sample rate: {e}");
-						vec![0.0; request.samples * channel_count]
+			let mut input_buffer = resampler.input_buffer_allocate();
+			let mut output_buffer = resampler.output_buffer_allocate();
+
+			let mut current_frame = 0;
+			let mut skip_count = Wrapping(0);
+			let mut last_request_speed = 1.0;
+			loop {
+				let request = match rrx.recv() {
+					Ok(request) => request,
+					Err(_) => {
+						debug!("Ending resampling thread.");
+						break;
 					}
 				};
-				// trace!("Sending {} samples over channel.", processed_samples.len());
+
+				// adjust position based on seek
+				if let Some((new_frame, new_skip_count)) = request.frame {
+					current_frame = new_frame;
+					skip_count = new_skip_count;
+				}
+
+				// adjust the speed if it has changed
+				if request.speed != last_request_speed {
+					resampler
+						.set_resample_ratio_relative(1.0 / request.speed)
+						.unwrap();
+					last_request_speed = request.speed;
+				}
+
+				// determine which samples to pass in to the converter
+				let frames_wanted_by_resampler = resampler.input_frames_next();
+				let last_frame = (current_frame + frames_wanted_by_resampler).min(total_frames);
+				let frames_we_have = last_frame - current_frame;
+				for i in 0..channel_count {
+					input_buffer[i].clear();
+					for j in 0..frames_wanted_by_resampler {
+						if current_frame + j < total_frames {
+							input_buffer[i].push(frames[i][current_frame + j]);
+						} else {
+							input_buffer[i].push(0.0);
+						}
+					}
+				}
+				current_frame = last_frame;
+
+				// resample the frames and convert into interleaved samples
+				let processed_samples =
+					match resampler.process_into_buffer(&input_buffer, &mut output_buffer, None) {
+						Ok(()) => {
+							let frame_count = if frames_we_have < frames_wanted_by_resampler {
+								frames_per_resample * frames_we_have / frames_wanted_by_resampler
+							} else {
+								frames_per_resample
+							};
+							let mut samples = vec![0.0; channel_count * frame_count];
+							for chan in 0..channel_count {
+								if chan < 2 || chan < output_buffer.len() {
+									for sample in 0..frame_count {
+										samples[sample * channel_count + chan] =
+											output_buffer[chan % output_buffer.len()][sample]
+									}
+								};
+							}
+							samples
+						}
+						Err(e) => {
+							error!("Error converting sample rate: {e}");
+							vec![0.0; expected_buffer_size]
+						}
+					};
+
+				// send the data out over the channel
 				// Dropping the other end of the channel will cause this to error, which will stop decoding.
-				if stx.send(Some(processed_samples)).is_err() {
+				if stx
+					.send(SampleResult {
+						samples: processed_samples,
+						skip_count,
+						done: frames_we_have < frames_wanted_by_resampler,
+					})
+					.is_err()
+				{
 					debug!("Ending resampling thread.");
 					break;
 				}
 			}
 		});
 		erx.recv()??;
-		rtx.send(SongRequest {
-			samples: target_buffer_size,
-			speed: playback_speed,
-			pos: 0,
+		rtx.send(SampleRequest {
+			speed: *playback_speed.read().unwrap(),
+			frame: Some((0, Wrapping(0))),
 		})?;
 		Ok(DecodingSong {
+			total_frames,
+			channel_count,
+			song_sample_rate,
+			playback_speed,
 			requests_channel: rtx,
 			samples_channel: Mutex::new(srx),
-			done: false,
-			target_buffer_size,
+			frames_per_resample,
 			buffer: VecDeque::new(),
-			len,
-			playback_speed,
-			last_request_size: 0,
+			pending_requests: 1,
+			done: false,
+			had_output: false,
+			expected_pos: 0,
+			skip_count: Wrapping(0),
 		})
 	}
-	fn read_samples(&mut self, pos: usize, count: usize) -> (Vec<f32>, bool) {
-		// TODO: Fix seeking properly.
-		self.target_buffer_size = self.target_buffer_size.max(count * 2);
-		let channel = self.samples_channel.lock().unwrap();
-		if self.target_buffer_size + count > self.buffer.len() {
-			let request_size = self.target_buffer_size + count - self.buffer.len();
+	fn read_samples(&mut self, sample_pos: usize, count: usize) -> (Vec<f32>, bool) {
+		// if they want another position, we're seeking, so reset the buffer
+		let playback_speed = *self.playback_speed.read().unwrap();
+		if sample_pos != self.expected_pos {
+			self.had_output = false;
+			self.done = false;
+			self.buffer.clear();
+			self.skip_count += 1;
 			self.requests_channel
-				.send(SongRequest {
-					samples: request_size,
-					speed: self.playback_speed,
-					pos: pos + self.buffer.len() + self.last_request_size,
+				.send(SampleRequest {
+					speed: playback_speed,
+					frame: Some((sample_pos / self.channel_count, self.skip_count)),
 				})
 				.unwrap(); // This shouldn't be able to fail unless the thread stops which shouldn't be able to happen.
-			self.last_request_size = request_size;
+			self.pending_requests = 1;
 		}
+
+		while count
+			> self.buffer.len()
+				+ self.pending_requests * self.frames_per_resample * self.channel_count
+		{
+			if self
+				.requests_channel
+				.send(SampleRequest {
+					speed: playback_speed,
+					frame: None,
+				})
+				.is_err()
+			{
+				break;
+			}
+
+			self.pending_requests += 1;
+		}
+		let channel = self.samples_channel.lock().unwrap();
 		if !self.done {
 			// Fetch samples until there are none left to fetch and we have enough.
-			let mut sent_warning = false;
+			let mut sent_warning = !self.had_output;
 			loop {
 				let got = channel.try_recv();
 				match got {
-					Ok(Some(buf)) => {
-						self.buffer.append(&mut VecDeque::from(buf));
+					Ok(SampleResult {
+						samples,
+						skip_count,
+						done,
+					}) => {
+						if self.skip_count == skip_count {
+							self.pending_requests -= 1;
+							self.buffer.append(&mut VecDeque::from(samples));
+							if done {
+								self.done = true;
+								break;
+							}
+						}
 					}
-					Ok(None) | Err(TryRecvError::Disconnected) => {
+					Err(TryRecvError::Disconnected) => {
 						self.done = true;
 						break;
 					}
 					Err(TryRecvError::Empty) => {
-						if self.buffer.len() > count {
+						if self.buffer.len() >= count {
 							break;
 						} else if !sent_warning {
 							warn!("Waiting on resampler, this could cause audio choppyness. If you are a developer and this happens repeatedly in release mode please file an issue on playback-rs or message the maintainer (BEN1JEN#8140) on discord.");
@@ -207,10 +294,12 @@ impl DecodingSong {
 				break;
 			}
 		}
+
+		self.expected_pos = sample_pos + count;
 		(vec, done)
 	}
-	fn len(&self) -> usize {
-		self.len
+	fn frame_len(&self) -> usize {
+		self.total_frames
 	}
 }
 
@@ -221,10 +310,10 @@ struct PlayerState {
 	playback: Arc<RwLock<Option<PlaybackState>>>,
 	next_samples: Arc<RwLock<Option<DecodingSong>>>,
 	playing: Arc<RwLock<bool>>,
-	playback_speed: Arc<RwLock<f32>>,
-	sample_rate: u32,
 	channel_count: usize,
+	sample_rate: usize,
 	buffer_size: u32,
+	playback_speed: Arc<RwLock<f64>>,
 }
 
 impl PlayerState {
@@ -234,7 +323,7 @@ impl PlayerState {
 			next_samples: Arc::new(RwLock::new(None)),
 			playing: Arc::new(RwLock::new(true)),
 			channel_count: channel_count as usize,
-			sample_rate,
+			sample_rate: sample_rate as usize,
 			buffer_size,
 			playback_speed: Arc::new(RwLock::new(1.0)),
 		})
@@ -254,25 +343,25 @@ impl PlayerState {
 				}
 			}
 			let mut done = false;
-			if let Some((decoding_song, pos)) = playback.as_mut() {
+			if let Some((decoding_song, sample_pos)) = playback.as_mut() {
 				let mut neg_offset = 0;
 				let data_len = data.len();
-				let (mut samples, mut is_final) = decoding_song.read_samples(*pos, data_len);
+				let (mut samples, mut is_final) = decoding_song.read_samples(*sample_pos, data_len);
 				for (i, sample) in data.iter_mut().enumerate() {
 					if i >= samples.len() {
 						if let Some(new_samples) = self.next_samples.write().unwrap().take() {
 							*decoding_song = new_samples;
 							neg_offset = i;
-							*pos = 0;
+							*sample_pos = 0;
 							(samples, is_final) =
-								decoding_song.read_samples(*pos, data_len - neg_offset);
+								decoding_song.read_samples(*sample_pos, data_len - neg_offset);
 						} else {
 							break;
 						}
 					}
 					*sample = T::from_sample(samples[i - neg_offset]);
 				}
-				*pos += data_len - neg_offset;
+				*sample_pos += data_len - neg_offset;
 				done = is_final;
 			}
 			if done {
@@ -286,18 +375,12 @@ impl PlayerState {
 			self.sample_rate,
 			self.channel_count,
 			self.buffer_size as usize,
-			*self.playback_speed.read().unwrap(),
+			self.playback_speed.clone(),
 		)
 	}
-	fn set_playback_speed(&self, speed: f32) {
-		*self.playback_speed.write().unwrap() = speed;
-		// TODO: This probably could be made better.
-		if let Some(pb) = &mut *self.playback.write().unwrap() {
-			pb.0.playback_speed = speed;
-		}
-		if let Some(samples) = &mut *self.next_samples.write().unwrap() {
-			samples.playback_speed = speed;
-		}
+	fn set_playback_speed(&self, speed: f64) {
+		*self.playback_speed.write().unwrap() =
+			speed.clamp(MINIMUM_PLAYBACK_SPEED, MAXIMUM_PLAYBACK_SPEED);
 	}
 	fn stop(&self) {
 		*self.next_samples.write().unwrap() = None;
@@ -314,16 +397,28 @@ impl PlayerState {
 	fn set_playing(&self, playing: bool) {
 		*self.playing.write().unwrap() = playing;
 	}
-	fn get_position(&self) -> Option<(usize, usize)> {
+	fn get_duration_per_sample(samples_per_second: usize) -> Duration {
+		Duration::from_nanos(1000000000 / (samples_per_second as u64))
+	}
+	fn get_position(&self) -> Option<(Duration, Duration)> {
 		self.playback
 			.read()
 			.unwrap()
 			.as_ref()
-			.map(|(samples, pos)| (*pos, samples.len()))
+			.map(|(samples, pos)| {
+				let duration_per_sample =
+					Self::get_duration_per_sample(self.channel_count * samples.song_sample_rate);
+				(
+					duration_per_sample * *pos as u32,
+					duration_per_sample * (samples.frame_len() * self.channel_count) as u32,
+				)
+			})
 	}
-	fn seek(&self, position: usize) -> bool {
-		if let Some((_samples, pos)) = self.playback.write().unwrap().as_mut() {
-			*pos = position;
+	fn seek(&self, time: Duration) -> bool {
+		if let Some((samples, pos)) = self.playback.write().unwrap().as_mut() {
+			let duration_per_sample =
+				Self::get_duration_per_sample(self.channel_count * samples.song_sample_rate);
+			*pos = (time.as_nanos() / duration_per_sample.as_nanos()) as usize;
 			true
 		} else {
 			false
@@ -492,7 +587,7 @@ impl Player {
 		})
 	}
 	/// Set the playback speed (This will also affect song pitch)
-	pub fn set_playback_speed(&self, speed: f32) {
+	pub fn set_playback_speed(&self, speed: f64) {
 		self.player_state.set_playback_speed(speed);
 	}
 	/// Set the song that will play after the current song is over (or immediately if no song is currently playing)
@@ -534,23 +629,13 @@ impl Player {
 	pub fn skip(&self) {
 		self.player_state.skip();
 	}
-	fn get_duration_per_sample(&self) -> Duration {
-		Duration::from_nanos(
-			1000000000
-				/ (self.player_state.sample_rate as u64 * self.player_state.channel_count as u64),
-		)
-	}
 	/// Return the current playback position, if there is currently a song playing (see [`has_current_song`](Player::has_current_song))
 	///
 	/// See also [`seek`](Player::seek)
 	pub fn get_playback_position(&self) -> Option<(Duration, Duration)> {
-		self.player_state.get_position().map(|(current, total)| {
-			let duration_per_sample = self.get_duration_per_sample();
-			(
-				duration_per_sample * current as u32,
-				duration_per_sample * total as u32,
-			)
-		})
+		self.player_state
+			.get_position()
+			.map(|(current, total)| (current, total))
 	}
 	/// Set the current playback position if there is a song playing
 	///
@@ -559,9 +644,7 @@ impl Player {
 	///
 	/// See also [`get_playback_position`](Player::get_playback_position)
 	pub fn seek(&self, time: Duration) -> bool {
-		let duration_per_sample = self.get_duration_per_sample();
-		let samples = (time.as_nanos() / duration_per_sample.as_nanos()) as usize;
-		self.player_state.seek(samples)
+		self.player_state.seek(time)
 	}
 	/// Sets whether playback is enabled or not, without touching the song queue.
 	///

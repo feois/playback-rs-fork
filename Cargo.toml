@@ -14,7 +14,7 @@ categories = ["multimedia", "multimedia::audio", "multimedia::encoding"]
 color-eyre = "0.6"
 cpal = "0.15"
 log = "0.4"
-samplerate = "0.2"
+rubato = "0.12"
 simplelog = { version = "0.12", optional = true }
 symphonia = { version = "0.5", features = ["isomp4", "aac", "alac", "mp3"] }
 
