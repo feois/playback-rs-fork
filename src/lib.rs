@@ -10,7 +10,10 @@ use std::time::Duration;
 
 use color_eyre::eyre::{Report, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{FrameCount, Sample, SampleFormat, SupportedBufferSize, SupportedStreamConfigRange};
+use cpal::{
+	Device, FrameCount, FromSample, OutputCallbackInfo, Sample, SampleFormat, SizedSample, Stream,
+	StreamConfig, SupportedBufferSize, SupportedStreamConfigRange,
+};
 use log::{debug, error, info, warn};
 use samplerate::{ConverterType, Samplerate};
 use symphonia::core::audio::SampleBuffer;
@@ -235,9 +238,12 @@ impl PlayerState {
 			playback_speed: Arc::new(RwLock::new(1.0)),
 		})
 	}
-	fn write_samples<T: Sample>(&self, data: &mut [T]) {
+	fn write_samples<T>(&self, data: &mut [T], _info: &OutputCallbackInfo)
+	where
+		T: Sample + FromSample<f32>,
+	{
 		for sample in data.iter_mut() {
-			*sample = Sample::from(&0.0);
+			*sample = Sample::EQUILIBRIUM;
 		}
 		if *self.playing.read().unwrap() {
 			let mut playback = self.playback.write().unwrap();
@@ -263,7 +269,7 @@ impl PlayerState {
 							break;
 						}
 					}
-					*sample = Sample::from(&samples[i - neg_offset]);
+					*sample = T::from_sample(samples[i - neg_offset]);
 				}
 				*pos += data_len - neg_offset;
 				done = is_final;
@@ -426,34 +432,48 @@ impl Player {
 			SupportedBufferSize::Unknown => 1024 * 2,
 		};
 		let config = supported_config.into();
-		let err_fn = |err| error!("A playback error has occured! {}", err);
 		let player_state = PlayerState::new(channel_count as u32, sample_rate, buffer_size)?;
 		info!(
 			"SR, CC, SF: {}, {}, {:?}",
 			sample_rate, channel_count, sample_format
 		);
+		fn build_stream<T>(
+			device: &Device,
+			config: &StreamConfig,
+			player_state: PlayerState,
+		) -> Result<Stream>
+		where
+			T: SizedSample + FromSample<f32>,
+		{
+			let err_fn = |err| error!("A playback error has occurred! {}", err);
+			let stream = device.build_output_stream(
+				config,
+				move |data, info| player_state.write_samples::<T>(data, info),
+				err_fn,
+				None,
+			)?;
+			// Not all platforms (*cough cough* windows *cough*) automatically run the stream upon creation, so do that here.
+			stream.play()?;
+			Ok(stream)
+		}
 		let stream = {
 			let player_state = player_state.clone();
 			match sample_format {
-				SampleFormat::F32 => device.build_output_stream(
-					&config,
-					move |data, _| player_state.write_samples::<f32>(data),
-					err_fn,
-				)?,
-				SampleFormat::I16 => device.build_output_stream(
-					&config,
-					move |data, _| player_state.write_samples::<i16>(data),
-					err_fn,
-				)?,
-				SampleFormat::U16 => device.build_output_stream(
-					&config,
-					move |data, _| player_state.write_samples::<u16>(data),
-					err_fn,
-				)?,
+				SampleFormat::I8 => build_stream::<i8>(&device, &config, player_state)?,
+				SampleFormat::I16 => build_stream::<i16>(&device, &config, player_state)?,
+				SampleFormat::I32 => build_stream::<i32>(&device, &config, player_state)?,
+				SampleFormat::I64 => build_stream::<i64>(&device, &config, player_state)?,
+				SampleFormat::U8 => build_stream::<u8>(&device, &config, player_state)?,
+				SampleFormat::U16 => build_stream::<u16>(&device, &config, player_state)?,
+				SampleFormat::U32 => build_stream::<u32>(&device, &config, player_state)?,
+				SampleFormat::U64 => build_stream::<u64>(&device, &config, player_state)?,
+				SampleFormat::F32 => build_stream::<f32>(&device, &config, player_state)?,
+				SampleFormat::F64 => build_stream::<f64>(&device, &config, player_state)?,
+				sample_format => Err(Report::msg(format!(
+					"Unsupported sample format '{sample_format}'"
+				)))?,
 			}
 		};
-		// Not all platforms (*cough cough* windows *cough*) automatically run the stream upon creation, so do that here.
-		stream.play()?;
 		Ok(Player {
 			_stream: Box::new(stream),
 			player_state,
