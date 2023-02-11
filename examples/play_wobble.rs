@@ -21,7 +21,7 @@ fn main() -> Result<()> {
 	let player = Player::new()?;
 	info!("Loading song '{}'...", song_filename);
 	let song = Song::from_file(&song_filename)?;
-	player.play_song_next(&song)?;
+	player.play_song_next(&song, None)?;
 	let start = Instant::now();
 	info!("Playing.");
 	while player.has_current_song() {

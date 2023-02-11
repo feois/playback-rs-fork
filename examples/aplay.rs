@@ -27,7 +27,7 @@ fn main() -> Result<()> {
 			next_song,
 			player.get_playback_position()
 		);
-		player.play_song_next(&song)?;
+		player.play_song_next(&song, None)?;
 		info!("Queued.");
 	}
 	info!("Waiting for songs to finish.");

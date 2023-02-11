@@ -47,7 +47,6 @@ struct DecodingSong {
 	channel_count: usize,
 	song_sample_rate: usize,
 
-	playback_speed: Arc<RwLock<f64>>,
 	requests_channel: SyncSender<SampleRequest>,
 	samples_channel: Mutex<Receiver<SampleResult>>,
 	frames_per_resample: usize,
@@ -70,7 +69,7 @@ impl DecodingSong {
 		player_sample_rate: usize,
 		channel_count: usize,
 		expected_buffer_size: usize,
-		playback_speed: Arc<RwLock<f64>>,
+		initial_playback_speed: f64,
 	) -> Result<DecodingSong> {
 		let frames = song.samples.clone();
 		let total_frames = frames[0].len();
@@ -124,7 +123,7 @@ impl DecodingSong {
 
 				// adjust position based on seek
 				if let Some((new_frame, new_skip_count)) = request.frame {
-					current_frame = new_frame;
+					current_frame = new_frame.min(total_frames);
 					skip_count = new_skip_count;
 				}
 
@@ -195,14 +194,13 @@ impl DecodingSong {
 		});
 		erx.recv()??;
 		rtx.send(SampleRequest {
-			speed: *playback_speed.read().unwrap(),
+			speed: initial_playback_speed,
 			frame: Some((0, Wrapping(0))),
 		})?;
 		Ok(DecodingSong {
 			total_frames,
 			channel_count,
 			song_sample_rate,
-			playback_speed,
 			requests_channel: rtx,
 			samples_channel: Mutex::new(srx),
 			frames_per_resample,
@@ -214,9 +212,13 @@ impl DecodingSong {
 			skip_count: Wrapping(0),
 		})
 	}
-	fn read_samples(&mut self, sample_pos: usize, count: usize) -> (Vec<f32>, bool) {
+	fn read_samples(
+		&mut self,
+		sample_pos: usize,
+		count: usize,
+		playback_speed: f64,
+	) -> (Vec<f32>, bool) {
 		// if they want another position, we're seeking, so reset the buffer
-		let playback_speed = *self.playback_speed.read().unwrap();
 		if sample_pos != self.expected_pos {
 			self.had_output = false;
 			self.done = false;
@@ -298,8 +300,16 @@ impl DecodingSong {
 		self.expected_pos = sample_pos + count;
 		(vec, done)
 	}
-	fn frame_len(&self) -> usize {
-		self.total_frames
+	fn get_duration_per_sample(&self) -> Duration {
+		Duration::from_nanos(1_000_000_000 / (self.channel_count * self.song_sample_rate) as u64)
+	}
+	fn duration_to_sample_pos(&self, time: Duration) -> usize {
+		let duration_per_sample = self.get_duration_per_sample();
+		let raw_pos = (time.as_nanos() / duration_per_sample.as_nanos()) as usize;
+		(raw_pos / self.channel_count) * self.channel_count
+	}
+	fn sample_len(&self) -> usize {
+		self.total_frames * self.channel_count
 	}
 }
 
@@ -308,7 +318,7 @@ type PlaybackState = (DecodingSong, usize);
 #[derive(Clone)]
 struct PlayerState {
 	playback: Arc<RwLock<Option<PlaybackState>>>,
-	next_samples: Arc<RwLock<Option<DecodingSong>>>,
+	next_samples: Arc<RwLock<Option<PlaybackState>>>,
 	playing: Arc<RwLock<bool>>,
 	channel_count: usize,
 	sample_rate: usize,
@@ -336,25 +346,32 @@ impl PlayerState {
 			*sample = Sample::EQUILIBRIUM;
 		}
 		if *self.playing.read().unwrap() {
+			let playback_speed = *self.playback_speed.read().unwrap();
 			let mut playback = self.playback.write().unwrap();
 			if playback.is_none() {
-				if let Some(new_samples) = self.next_samples.write().unwrap().take() {
-					*playback = Some((new_samples, 0));
+				if let Some((new_samples, new_pos)) = self.next_samples.write().unwrap().take() {
+					*playback = Some((new_samples, new_pos));
 				}
 			}
 			let mut done = false;
 			if let Some((decoding_song, sample_pos)) = playback.as_mut() {
 				let mut neg_offset = 0;
 				let data_len = data.len();
-				let (mut samples, mut is_final) = decoding_song.read_samples(*sample_pos, data_len);
+				let (mut samples, mut is_final) =
+					decoding_song.read_samples(*sample_pos, data_len, playback_speed);
 				for (i, sample) in data.iter_mut().enumerate() {
 					if i >= samples.len() {
-						if let Some(new_samples) = self.next_samples.write().unwrap().take() {
+						if let Some((new_samples, new_pos)) =
+							self.next_samples.write().unwrap().take()
+						{
 							*decoding_song = new_samples;
 							neg_offset = i;
-							*sample_pos = 0;
-							(samples, is_final) =
-								decoding_song.read_samples(*sample_pos, data_len - neg_offset);
+							*sample_pos = new_pos;
+							(samples, is_final) = decoding_song.read_samples(
+								*sample_pos,
+								data_len - neg_offset,
+								playback_speed,
+							);
 						} else {
 							break;
 						}
@@ -375,7 +392,7 @@ impl PlayerState {
 			self.sample_rate,
 			self.channel_count,
 			self.buffer_size as usize,
-			self.playback_speed.clone(),
+			*self.playback_speed.read().unwrap(),
 		)
 	}
 	fn set_playback_speed(&self, speed: f64) {
@@ -389,16 +406,17 @@ impl PlayerState {
 	fn skip(&self) {
 		*self.playback.write().unwrap() = None;
 	}
-	fn play_song(&self, song: &Song) -> Result<()> {
+	fn play_song(&self, song: &Song, time: Option<Duration>) -> Result<()> {
 		let samples = self.decode_song(song)?;
-		*self.next_samples.write().unwrap() = Some(samples);
+		let pos = match time {
+			None => 0,
+			Some(time) => samples.duration_to_sample_pos(time),
+		};
+		*self.next_samples.write().unwrap() = Some((samples, pos));
 		Ok(())
 	}
 	fn set_playing(&self, playing: bool) {
 		*self.playing.write().unwrap() = playing;
-	}
-	fn get_duration_per_sample(samples_per_second: usize) -> Duration {
-		Duration::from_nanos(1000000000 / (samples_per_second as u64))
 	}
 	fn get_position(&self) -> Option<(Duration, Duration)> {
 		self.playback
@@ -406,19 +424,23 @@ impl PlayerState {
 			.unwrap()
 			.as_ref()
 			.map(|(samples, pos)| {
-				let duration_per_sample =
-					Self::get_duration_per_sample(self.channel_count * samples.song_sample_rate);
+				let duration_per_sample = samples.get_duration_per_sample();
 				(
 					duration_per_sample * *pos as u32,
-					duration_per_sample * (samples.frame_len() * self.channel_count) as u32,
+					duration_per_sample * (samples.sample_len()) as u32,
 				)
 			})
 	}
 	fn seek(&self, time: Duration) -> bool {
-		if let Some((samples, pos)) = self.playback.write().unwrap().as_mut() {
-			let duration_per_sample =
-				Self::get_duration_per_sample(self.channel_count * samples.song_sample_rate);
-			*pos = (time.as_nanos() / duration_per_sample.as_nanos()) as usize;
+		let (mut playback, mut next_song) = (
+			self.playback.write().unwrap(),
+			self.next_samples.write().unwrap(),
+		);
+		if let Some((samples, pos)) = playback.as_mut() {
+			*pos = samples.duration_to_sample_pos(time);
+			true
+		} else if let Some((samples, pos)) = next_song.as_mut() {
+			*pos = samples.duration_to_sample_pos(time);
 			true
 		} else {
 			false
@@ -591,22 +613,22 @@ impl Player {
 		self.player_state.set_playback_speed(speed);
 	}
 	/// Set the song that will play after the current song is over (or immediately if no song is currently playing)
-	pub fn play_song_next(&self, song: &Song) -> Result<()> {
-		self.player_state.play_song(song)
+	pub fn play_song_next(&self, song: &Song, time: Option<Duration>) -> Result<()> {
+		self.player_state.play_song(song, time)
 	}
 	/// Start playing a song immediately, while discarding any song that might have been queued to play next.
-	pub fn play_song_now(&self, song: &Song) -> Result<()> {
+	pub fn play_song_now(&self, song: &Song, time: Option<Duration>) -> Result<()> {
 		self.player_state.stop();
-		self.player_state.play_song(song)?;
+		self.player_state.play_song(song, time)?;
 		Ok(())
 	}
 	/// Used to replace the next song, or the current song if there is no next song.
 	///
 	/// This will remove the current song if no next song exists to avoid a race condition in case the current song ends after you have determined that the next song must be replaced but before you call this function.
 	/// See also [`force_remove_next_song`](Player::force_remove_next_song)
-	pub fn force_replace_next_song(&self, song: &Song) -> Result<()> {
+	pub fn force_replace_next_song(&self, song: &Song, time: Option<Duration>) -> Result<()> {
 		self.player_state.force_remove_next_song();
-		self.player_state.play_song(song)?;
+		self.player_state.play_song(song, time)?;
 		Ok(())
 	}
 	/// Used to remove the next song, or the current song if there is no next song.
@@ -633,11 +655,9 @@ impl Player {
 	///
 	/// See also [`seek`](Player::seek)
 	pub fn get_playback_position(&self) -> Option<(Duration, Duration)> {
-		self.player_state
-			.get_position()
-			.map(|(current, total)| (current, total))
+		self.player_state.get_position()
 	}
-	/// Set the current playback position if there is a song playing
+	/// Set the current playback position if there is a song playing or a song queued to be played next.
 	///
 	/// Returns whether the seek was successful (whether there was a song to seek).
 	/// Note that seeking past the end of the song will be successful and will cause playback to begin at the _beginning_ of the next song.
@@ -652,7 +672,7 @@ impl Player {
 	pub fn set_playing(&self, playing: bool) {
 		self.player_state.set_playing(playing);
 	}
-	/// Returns whether playback is currently paused
+	/// Returns whether playback is currently paused.
 	///
 	/// See also [`set_playing`](Player::set_playing)
 	pub fn is_playing(&self) -> bool {
