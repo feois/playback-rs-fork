@@ -1,6 +1,7 @@
 #![warn(missing_docs)]
 #![doc(issue_tracker_base_url = "https://gitlab.101100.ca/ben1jen/playback-rs/-/issues")]
 #![doc = include_str!("../docs.md")]
+#![feature(c_variadic)]
 
 use std::collections::VecDeque;
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError};
@@ -11,8 +12,8 @@ use std::time::Duration;
 use color_eyre::eyre::{Report, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{
-	Device, FrameCount, FromSample, OutputCallbackInfo, Sample, SampleFormat, SizedSample, Stream,
-	StreamConfig, SupportedBufferSize, SupportedStreamConfigRange,
+	Device, FrameCount, FromSample, HostId, OutputCallbackInfo, Sample, SampleFormat, SizedSample,
+	Stream, StreamConfig, SupportedBufferSize, SupportedStreamConfigRange,
 };
 use log::{debug, error, info, warn};
 use samplerate::{ConverterType, Samplerate};
@@ -360,6 +361,17 @@ impl Player {
 				}
 			}
 			info!("Selected Host: {:?}", selected_host.id());
+			#[cfg(any(
+				target_os = "linux",
+				target_os = "dragonfly",
+				target_os = "freebsd",
+				target_os = "netbsd"
+			))]
+			{
+				if selected_host.id() == HostId::Alsa {
+					block_alsa_output();
+				}
+			}
 			let mut selected_device = selected_host
 				.default_output_device()
 				.ok_or_else(|| Report::msg("No output device found."))?;
@@ -667,5 +679,37 @@ impl Song {
 			hint.with_extension(extension);
 		}
 		Self::new(Box::new(std::fs::File::open(path)?), &hint)
+	}
+}
+
+#[cfg(any(
+	target_os = "linux",
+	target_os = "dragonfly",
+	target_os = "freebsd",
+	target_os = "netbsd"
+))]
+fn block_alsa_output() {
+	use std::os::raw::{c_char, c_int};
+
+	use alsa_sys::snd_lib_error_set_handler;
+
+	unsafe extern "C" fn error_handler(
+		_file: *const c_char,
+		_line: c_int,
+		_function: *const c_char,
+		_err: c_int,
+		_format: *const c_char,
+		_format_params: ...
+	) {
+		// use std::ffi::CStr;
+		// let file = String::from_utf8_lossy(CStr::from_ptr(file).to_bytes()).to_string();
+		// let function = String::from_utf8_lossy(CStr::from_ptr(function).to_bytes()).to_string();
+		// let format = String::from_utf8_lossy(CStr::from_ptr(format).to_bytes()).to_string();
+		// // don't know how to use the println-style format string
+		// debug!("ALSA: {err}: {file} ({line}): {function}: {format}");
+	}
+
+	unsafe {
+		snd_lib_error_set_handler(Some(error_handler));
 	}
 }
