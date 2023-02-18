@@ -17,7 +17,7 @@ fn main() -> Result<()> {
 	let player = Player::new()?;
 	for next_song in filenames {
 		info!("Loading song '{}'...", next_song);
-		let song = Song::from_file(&next_song)?;
+		let song = Song::from_file(&next_song, None)?;
 		info!("Waiting for queue space to become available...");
 		while player.has_next_song() {
 			std::thread::sleep(std::time::Duration::from_millis(100));

@@ -20,7 +20,7 @@ fn main() -> Result<()> {
 		.expect("Expected one filename as the first argument.");
 	let player = Player::new()?;
 	info!("Loading song '{}'...", song_filename);
-	let song = Song::from_file(&song_filename)?;
+	let song = Song::from_file(&song_filename, None)?;
 	player.play_song_next(&song, None)?;
 	let start = Instant::now();
 	info!("Playing.");

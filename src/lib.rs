@@ -74,6 +74,7 @@ impl DecodingSong {
 		let frames = song.samples.clone();
 		let total_frames = frames[0].len();
 		let frames_per_resample = expected_buffer_size / channel_count;
+		let volume_adjustment = song.volume_adjustment;
 
 		let (rtx, rrx) = mpsc::sync_channel::<SampleRequest>(10);
 		let (stx, srx) = mpsc::channel();
@@ -164,8 +165,9 @@ impl DecodingSong {
 							for chan in 0..channel_count {
 								if chan < 2 || chan < output_buffer.len() {
 									for sample in 0..frame_count {
-										samples[sample * channel_count + chan] =
-											output_buffer[chan % output_buffer.len()][sample]
+										samples[sample * channel_count + chan] = output_buffer
+											[chan % output_buffer.len()][sample]
+											* volume_adjustment
 									}
 								};
 							}
@@ -712,11 +714,16 @@ pub struct Song {
 	samples: Vec<Vec<f32>>,
 	sample_rate: u32,
 	channel_count: u32,
+	volume_adjustment: f32,
 }
 
 impl Song {
 	/// Creates a new song using a reader of some kind and a type hint (the Symphonia hint type has been reexported at the crate root for convenience).
-	pub fn new(reader: Box<dyn MediaSource>, hint: &Hint) -> Result<Song> {
+	pub fn new(
+		reader: Box<dyn MediaSource>,
+		hint: &Hint,
+		volume_adjustment: Option<f32>,
+	) -> Result<Song> {
 		let media_source_stream =
 			MediaSourceStream::new(reader, MediaSourceStreamOptions::default());
 		let mut probe_result = default::get_probe().format(
@@ -754,6 +761,7 @@ impl Song {
 							samples: vec![Vec::new(); spec.channels.count()],
 							sample_rate: spec.rate,
 							channel_count: spec.channels.count() as u32,
+							volume_adjustment: volume_adjustment.unwrap_or(1.0),
 						});
 						song.as_mut().unwrap()
 					};
@@ -776,12 +784,19 @@ impl Song {
 		song.ok_or_else(|| Report::msg("No song data decoded."))
 	}
 	/// Creates a [Song] by reading data from a file and using the file's extension as a format type hint.
-	pub fn from_file<P: AsRef<std::path::Path>>(path: P) -> Result<Song> {
+	pub fn from_file<P: AsRef<std::path::Path>>(
+		path: P,
+		volume_adjustment: Option<f32>,
+	) -> Result<Song> {
 		let mut hint = Hint::new();
 		if let Some(extension) = path.as_ref().extension().and_then(|s| s.to_str()) {
 			hint.with_extension(extension);
 		}
-		Self::new(Box::new(std::fs::File::open(path)?), &hint)
+		Self::new(
+			Box::new(std::fs::File::open(path)?),
+			&hint,
+			volume_adjustment,
+		)
 	}
 }
 

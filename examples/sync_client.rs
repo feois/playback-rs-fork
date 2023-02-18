@@ -71,7 +71,7 @@ fn main() -> Result<()> {
 		if !player.has_next_song() {
 			if let Some(filename) = filenames.next() {
 				info!("Loading next song...");
-				let song = Song::from_file(&filename)?;
+				let song = Song::from_file(&filename, None)?;
 				player.play_song_next(&song, None)?;
 				info!("Song queued.");
 			}
