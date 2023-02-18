@@ -3,10 +3,10 @@ name = "playback-rs"
 description = "A very simple audio/song loading and playing library."
 version = "0.2.5"
 edition = "2021"
-authors = ["Ben Heard <benpheard@gmail.com>"]
+authors = ["Veda Heard <veda@vedapowered.ca>"]
 license = "ISC"
 readme = "readme.md"
-repository = "https://gitlab.101100.ca/ben1jen/playback-rs/"
+repository = "https://gitlab.101100.ca/veda/playback-rs/"
 keywords = ["music", "sound", "playback", "decode", "decoder"]
 categories = ["multimedia", "multimedia::audio", "multimedia::encoding"]
 

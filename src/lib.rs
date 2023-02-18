@@ -1,5 +1,5 @@
 #![warn(missing_docs)]
-#![doc(issue_tracker_base_url = "https://gitlab.101100.ca/ben1jen/playback-rs/-/issues")]
+#![doc(issue_tracker_base_url = "https://gitlab.101100.ca/veda/playback-rs/-/issues")]
 #![doc = include_str!("../docs.md")]
 #![feature(c_variadic)]
 
@@ -281,7 +281,7 @@ impl DecodingSong {
 						if self.buffer.len() >= count {
 							break;
 						} else if !sent_warning {
-							warn!("Waiting on resampler, this could cause audio choppyness. If you are a developer and this happens repeatedly in release mode please file an issue on playback-rs or message the maintainer (BEN1JEN#8140) on discord.");
+							warn!("Waiting on resampler, this could cause audio choppyness. If you are a developer and this happens repeatedly in release mode please file an issue on playback-rs.");
 							sent_warning = true;
 						}
 					}
