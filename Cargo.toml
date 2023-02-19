@@ -1,9 +1,9 @@
 [package]
 name = "playback-rs"
 description = "A very simple audio/song loading and playing library."
-version = "0.2.5"
+version = "0.3.0"
 edition = "2021"
-authors = ["Veda Heard <veda@vedapowered.ca>"]
+authors = ["Veda Heard <veda@vedapowered.ca>", "Jason Heard"]
 license = "ISC"
 readme = "readme.md"
 repository = "https://gitlab.101100.ca/veda/playback-rs/"

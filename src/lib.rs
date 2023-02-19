@@ -468,7 +468,7 @@ pub struct Player {
 }
 
 impl Player {
-	/// Creates a new [Player] to play [Song]s
+	/// Creates a new [Player] to play [Song]s.
 	///
 	/// On Linux, this prefers `pipewire`, `jack`, and `pulseaudio` devices over `alsa`.
 	pub fn new() -> Result<Player> {
@@ -614,23 +614,23 @@ impl Player {
 	pub fn set_playback_speed(&self, speed: f64) {
 		self.player_state.set_playback_speed(speed);
 	}
-	/// Set the song that will play after the current song is over (or immediately if no song is currently playing)
-	pub fn play_song_next(&self, song: &Song, time: Option<Duration>) -> Result<()> {
-		self.player_state.play_song(song, time)
+	/// Set the song that will play after the current song is over (or immediately if no song is currently playing), optionally start playing in the middle of the song.
+	pub fn play_song_next(&self, song: &Song, start_time: Option<Duration>) -> Result<()> {
+		self.player_state.play_song(song, start_time)
 	}
-	/// Start playing a song immediately, while discarding any song that might have been queued to play next.
-	pub fn play_song_now(&self, song: &Song, time: Option<Duration>) -> Result<()> {
+	/// Start playing a song immediately, while discarding any song that might have been queued to play next. Optionally start playing in the middle of the song.
+	pub fn play_song_now(&self, song: &Song, start_time: Option<Duration>) -> Result<()> {
 		self.player_state.stop();
-		self.player_state.play_song(song, time)?;
+		self.player_state.play_song(song, start_time)?;
 		Ok(())
 	}
-	/// Used to replace the next song, or the current song if there is no next song.
+	/// Used to replace the next song, or the current song if there is no next song. Optionally start playing in the middle of the song.
 	///
 	/// This will remove the current song if no next song exists to avoid a race condition in case the current song ends after you have determined that the next song must be replaced but before you call this function.
 	/// See also [`force_remove_next_song`](Player::force_remove_next_song)
-	pub fn force_replace_next_song(&self, song: &Song, time: Option<Duration>) -> Result<()> {
+	pub fn force_replace_next_song(&self, song: &Song, start_time: Option<Duration>) -> Result<()> {
 		self.player_state.force_remove_next_song();
-		self.player_state.play_song(song, time)?;
+		self.player_state.play_song(song, start_time)?;
 		Ok(())
 	}
 	/// Used to remove the next song, or the current song if there is no next song.
@@ -718,7 +718,7 @@ pub struct Song {
 }
 
 impl Song {
-	/// Creates a new song using a reader of some kind and a type hint (the Symphonia hint type has been reexported at the crate root for convenience).
+	/// Creates a new song using a reader of some kind and a type hint (the Symphonia hint type has been reexported at the crate root for convenience), as well as an optional volume adjustment (used for e.g. replay gain).
 	pub fn new(
 		reader: Box<dyn MediaSource>,
 		hint: &Hint,
@@ -810,21 +810,37 @@ fn block_alsa_output() {
 	use std::os::raw::{c_char, c_int};
 
 	use alsa_sys::snd_lib_error_set_handler;
+	use log::trace;
 
 	unsafe extern "C" fn error_handler(
-		_file: *const c_char,
-		_line: c_int,
-		_function: *const c_char,
-		_err: c_int,
-		_format: *const c_char,
-		_format_params: ...
+		file: *const c_char,
+		line: c_int,
+		function: *const c_char,
+		err: c_int,
+		format: *const c_char,
+		mut format_args: ...
 	) {
-		// use std::ffi::CStr;
-		// let file = String::from_utf8_lossy(CStr::from_ptr(file).to_bytes()).to_string();
-		// let function = String::from_utf8_lossy(CStr::from_ptr(function).to_bytes()).to_string();
-		// let format = String::from_utf8_lossy(CStr::from_ptr(format).to_bytes()).to_string();
-		// // don't know how to use the println-style format string
-		// debug!("ALSA: {err}: {file} ({line}): {function}: {format}");
+		use std::ffi::CStr;
+		let file = String::from_utf8_lossy(CStr::from_ptr(file).to_bytes());
+		let function = String::from_utf8_lossy(CStr::from_ptr(function).to_bytes());
+		let format = String::from_utf8_lossy(CStr::from_ptr(format).to_bytes());
+		// FIXME: This should really be better, but it works for alsa so
+		let mut last_m = 0;
+		let formatted: String = format
+			.match_indices("%s")
+			.flat_map(|(m, s)| {
+				let res = [
+					format[last_m..m].to_string(),
+					String::from_utf8_lossy(
+						CStr::from_ptr(format_args.arg::<*const c_char>()).to_bytes(),
+					)
+					.to_string(),
+				];
+				last_m = m + s.len();
+				res
+			})
+			.collect();
+		trace!("ALSA Error: {err}: {file} ({line}): {function}: {formatted}");
 	}
 
 	unsafe {
