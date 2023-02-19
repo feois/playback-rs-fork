@@ -1,4 +1,6 @@
 image: rustlang/rust:nightly
+variables:
+  CARGO_UNSTABLE_SPARSE_REGISTRY: "true"
 
 stages:
   - check
@@ -13,9 +15,9 @@ lint:
   stage: check
   script:
     - apt-get update
-    - apt-get install cmake libasound-dev libsamplerate0-dev -y
+    - apt-get install libasound-dev -y
     - rustup component add clippy
-    - cargo clippy
+    - cargo clippy -- -D warnings
 
 #test:
 #  stage: check

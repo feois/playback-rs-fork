@@ -19,7 +19,7 @@ fn main() -> Result<()> {
 	)
 	.unwrap();
 	debug!("Connecting...");
-	let mut stream = TcpStream::connect("127.0.0.1:3305")?;
+	let mut stream = TcpStream::connect("192.168.2.136:3305")?;
 	debug!("Connected!");
 
 	let start_time = Arc::new(Instant::now());
@@ -66,12 +66,13 @@ fn main() -> Result<()> {
 	}
 	let player = Player::new()?;
 	let mut filenames = std::env::args().skip(1).peekable();
+	let mut seek_next = true;
 	while player.has_current_song() || filenames.peek().is_some() {
 		if !player.has_next_song() {
 			if let Some(filename) = filenames.next() {
 				info!("Loading next song...");
-				let song = Song::from_file(&filename)?;
-				player.play_song_next(&song)?;
+				let song = Song::from_file(&filename, None)?;
+				player.play_song_next(&song, None)?;
 				info!("Song queued.");
 			}
 		}
@@ -82,13 +83,17 @@ fn main() -> Result<()> {
 			.map(|(pp, _)| pp.as_micros() as i128)
 			.unwrap_or(0);
 		let time_diff = current_time - playback_micros;
-		let speedup = (1.0 + time_diff as f64 / 1000000.0).clamp(0.9, 1.1);
+		let speedup = (1.0 + time_diff as f64 / 10000000.0).clamp(0.99, 1.01);
 		info!("Current song time: {}µs, current (sync) time: {}µs, time diff: {:.2}s, speedup: {:.2}x, current adjustment: {}µs", playback_micros, current_time, time_diff as f64 / 1000000.0, speedup, adjustment);
-		if time_diff > 2000000 {
-			warn!("Time drift is larger than 2 seconds! Seeking...");
+
+		if time_diff > 1000000 || seek_next {
+			if !seek_next {
+				warn!("Time drift is larger than 1 second! Seeking...");
+			}
 			player.seek(Duration::from_micros(current_time.try_into()?));
+			seek_next = !seek_next;
 		} else {
-			// TODO: Set speedup
+			player.set_playback_speed(speedup as f32);
 		}
 
 		thread::sleep(Duration::from_millis(100));
