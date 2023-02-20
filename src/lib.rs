@@ -66,6 +66,7 @@ const MAXIMUM_PLAYBACK_SPEED: f64 = 1.0 * MAXIMUM_SPEED_ADJUSTMENT_FACTOR;
 impl DecodingSong {
 	fn new(
 		song: &Song,
+		initial_pos: Duration,
 		player_sample_rate: usize,
 		channel_count: usize,
 		expected_buffer_size: usize,
@@ -199,9 +200,10 @@ impl DecodingSong {
 			}
 		});
 		erx.recv()??;
+		let skip_count = Wrapping(0);
 		rtx.send(SampleRequest {
 			speed: initial_playback_speed,
-			frame: Some((Duration::ZERO, Wrapping(0))),
+			frame: Some((initial_pos, skip_count)),
 		})?;
 		Ok(DecodingSong {
 			song_length,
@@ -213,8 +215,8 @@ impl DecodingSong {
 			pending_requests: 1,
 			done: false,
 			had_output: false,
-			expected_pos: Duration::ZERO,
-			skip_count: Wrapping(0),
+			expected_pos: initial_pos,
+			skip_count,
 		})
 	}
 	fn read_samples(
@@ -384,9 +386,10 @@ impl PlayerState {
 			}
 		}
 	}
-	fn decode_song(&self, song: &Song) -> Result<DecodingSong> {
+	fn decode_song(&self, song: &Song, initial_pos: Duration) -> Result<DecodingSong> {
 		DecodingSong::new(
 			song,
+			initial_pos,
 			self.sample_rate,
 			self.channel_count,
 			self.buffer_size as usize,
@@ -405,8 +408,9 @@ impl PlayerState {
 		*self.playback.write().unwrap() = None;
 	}
 	fn play_song(&self, song: &Song, time: Option<Duration>) -> Result<()> {
-		let samples = self.decode_song(song)?;
-		*self.next_samples.write().unwrap() = Some((samples, time.unwrap_or_default()));
+		let initial_pos = time.unwrap_or_default();
+		let samples = self.decode_song(song, initial_pos)?;
+		*self.next_samples.write().unwrap() = Some((samples, initial_pos));
 		Ok(())
 	}
 	fn set_playing(&self, playing: bool) {
