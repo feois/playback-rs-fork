@@ -467,10 +467,15 @@ pub struct Player {
 }
 
 impl Player {
-	/// Creates a new [Player] to play [Song]s.
+	/// Creates a new [Player] to play [Song]s. If specified, the player will attempt to use one of
+	/// the specified sampling rates. If not specified or the list is empty, the preferred rates
+	/// are 48000 and 44100.
+	///
+	/// If none of the preferred sampling rates are available, the closest available rate to the
+	/// first preferred rate will be selected.
 	///
 	/// On Linux, this prefers `pipewire`, `jack`, and `pulseaudio` devices over `alsa`.
-	pub fn new() -> Result<Player> {
+	pub fn new(preferred_sampling_rates: Option<Vec<u32>>) -> Result<Player> {
 		let device = {
 			let mut selected_host = cpal::default_host();
 			for host in cpal::available_hosts() {
@@ -510,7 +515,11 @@ impl Player {
 			selected_device
 		};
 		let mut supported_configs = device.supported_output_configs()?.collect::<Vec<_>>();
-		fn rank_supported_config(config: &SupportedStreamConfigRange) -> u32 {
+		let preferred_sampling_rates = preferred_sampling_rates
+			.filter(|given_rates| !given_rates.is_empty())
+			.unwrap_or(vec![48000, 44100]);
+		let preferred_sampling_rate = preferred_sampling_rates[0];
+		let rank_supported_config = |config: &SupportedStreamConfigRange| {
 			let chans = config.channels() as u32;
 			let channel_rank = match chans {
 				0 => 0,
@@ -519,12 +528,12 @@ impl Player {
 				4 => 3,
 				_ => 2,
 			};
-			let min_sample_rank = if config.min_sample_rate().0 <= 48000 {
+			let min_sample_rank = if config.min_sample_rate().0 <= preferred_sampling_rate {
 				3
 			} else {
 				0
 			};
-			let max_sample_rank = if config.max_sample_rate().0 >= 48000 {
+			let max_sample_rank = if config.max_sample_rate().0 >= preferred_sampling_rate {
 				3
 			} else {
 				0
@@ -535,7 +544,7 @@ impl Player {
 				0
 			};
 			channel_rank + min_sample_rank + max_sample_rank + sample_format_rank
-		}
+		};
 		supported_configs.sort_by_key(|c_2| std::cmp::Reverse(rank_supported_config(c_2)));
 
 		let supported_config = supported_configs
@@ -545,11 +554,12 @@ impl Player {
 
 		let sample_rate_range =
 			supported_config.min_sample_rate().0..supported_config.max_sample_rate().0;
-		let supported_config = if sample_rate_range.contains(&48000) {
-			supported_config.with_sample_rate(cpal::SampleRate(48000))
-		} else if sample_rate_range.contains(&44100) {
-			supported_config.with_sample_rate(cpal::SampleRate(44100))
-		} else if sample_rate_range.end <= 48000 {
+		let supported_config = if let Some(selected_rate) = preferred_sampling_rates
+			.into_iter()
+			.find(|rate| sample_rate_range.contains(rate))
+		{
+			supported_config.with_sample_rate(cpal::SampleRate(selected_rate))
+		} else if sample_rate_range.end <= preferred_sampling_rate {
 			supported_config.with_sample_rate(cpal::SampleRate(sample_rate_range.end))
 		} else {
 			supported_config.with_sample_rate(cpal::SampleRate(sample_rate_range.start))
