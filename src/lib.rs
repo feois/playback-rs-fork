@@ -79,8 +79,8 @@ impl DecodingSong {
 
 		let (rtx, rrx) = mpsc::sync_channel::<SampleRequest>(10);
 		let (stx, srx) = mpsc::channel();
-		let duration_per_frame = Duration::from_nanos(1_000_000_000 / song.sample_rate as u64);
-		let song_length = duration_per_frame * total_frames as u32;
+		let song_sample_rate = song.sample_rate as u64;
+		let song_length = Self::frame_to_duration(total_frames, song_sample_rate);
 		let resample_ratio = player_sample_rate as f64 / song.sample_rate as f64;
 		let (etx, erx) = mpsc::channel();
 		thread::spawn(move || {
@@ -126,7 +126,9 @@ impl DecodingSong {
 
 				// adjust position based on seek
 				if let Some((new_pos, new_skip_count)) = request.frame {
-					let new_frame = (new_pos.as_nanos() / duration_per_frame.as_nanos()) as usize;
+					let new_frame = (song_sample_rate * new_pos.as_secs()
+						+ song_sample_rate * new_pos.subsec_nanos() as u64 / 1_000_000_000)
+						as usize;
 					current_frame = new_frame.min(total_frames);
 					skip_count = new_skip_count;
 				}
@@ -154,7 +156,7 @@ impl DecodingSong {
 					}
 				}
 				current_frame = last_frame;
-				let end_pos = duration_per_frame * current_frame as u32;
+				let end_pos = Self::frame_to_duration(current_frame, song_sample_rate);
 
 				// resample the frames and convert into interleaved samples
 				let processed_samples =
@@ -310,6 +312,13 @@ impl DecodingSong {
 		}
 
 		(vec, self.expected_pos, done)
+	}
+	fn frame_to_duration(frame: usize, song_sample_rate: u64) -> Duration {
+		let sub_second_samples = frame as u64 % song_sample_rate;
+		Duration::new(
+			frame as u64 / song_sample_rate,
+			(1_000_000_000 * sub_second_samples / song_sample_rate) as u32,
+		)
 	}
 }
 
