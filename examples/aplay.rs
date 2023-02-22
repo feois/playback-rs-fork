@@ -14,7 +14,7 @@ fn main() -> Result<()> {
 	.unwrap();
 
 	let filenames = std::env::args().skip(1);
-	let player = Player::new()?;
+	let player = Player::new(None)?;
 	for next_song in filenames {
 		info!("Loading song '{}'...", next_song);
 		let song = Song::from_file(&next_song, None)?;

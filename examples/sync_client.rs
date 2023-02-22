@@ -64,7 +64,7 @@ fn main() -> Result<()> {
 			}
 		});
 	}
-	let player = Player::new()?;
+	let player = Player::new(None)?;
 	let mut filenames = std::env::args().skip(1).peekable();
 	let mut seek_next = true;
 	while player.has_current_song() || filenames.peek().is_some() {
@@ -93,7 +93,7 @@ fn main() -> Result<()> {
 			player.seek(Duration::from_micros(current_time.try_into()?));
 			seek_next = !seek_next;
 		} else {
-			player.set_playback_speed(speedup as f32);
+			player.set_playback_speed(speedup);
 		}
 
 		thread::sleep(Duration::from_millis(100));
