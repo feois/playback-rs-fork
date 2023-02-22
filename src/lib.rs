@@ -467,7 +467,7 @@ impl PlayerState {
 	}
 }
 
-/// Manages playback of [Song]s through [cpal] and sample conversion through [samplerate].
+/// Manages playback of [Song]s through [cpal] and sample conversion through [rubato].
 pub struct Player {
 	_stream: Box<dyn StreamTrait>,
 	player_state: PlayerState,
@@ -725,6 +725,8 @@ impl Player {
 }
 
 /// Represents a single song that has been decoded into memory, can be played in a <Player> struct.
+///
+/// The data in the song is stored in an <Arc> so cloning a song is a lightweight operation.
 #[derive(Debug, Clone)]
 pub struct Song {
 	samples: Arc<Vec<Vec<f32>>>,
@@ -808,7 +810,7 @@ impl Song {
 		})
 		.ok_or_else(|| Report::msg("No song data decoded."))
 	}
-	/// Creates a [Song] by reading data from a file and using the file's extension as a format type hint.
+	/// Creates a [Song] by reading data from a file and using the file's extension as a format type hint. Takes an optional volume adjustment (used for e.g. replay gain)
 	pub fn from_file<P: AsRef<std::path::Path>>(
 		path: P,
 		volume_adjustment: Option<f32>,
