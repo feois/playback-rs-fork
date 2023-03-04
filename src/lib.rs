@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 use std::time::Duration;
 
-use color_eyre::eyre::{Report, Result};
+use color_eyre::eyre::{ensure, Report, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{
 	Device, FrameCount, FromSample, HostId, OutputCallbackInfo, Sample, SampleFormat, SizedSample,
@@ -396,6 +396,13 @@ impl PlayerState {
 		}
 	}
 	fn decode_song(&self, song: &Song, initial_pos: Duration) -> Result<DecodingSong> {
+		// FIXME: Update library to allow playing songs with a different number of channels than the player.
+		ensure!(
+			song.channel_count == self.channel_count,
+			"This player can only play songs with {} channels but the song has {} channels.",
+			self.channel_count,
+			song.channel_count
+		);
 		DecodingSong::new(
 			song,
 			initial_pos,
@@ -460,7 +467,7 @@ impl PlayerState {
 	}
 }
 
-/// Manages playback of [Song]s through [cpal] and sample conversion through [samplerate].
+/// Manages playback of [Song]s through [cpal] and sample conversion through [rubato].
 pub struct Player {
 	_stream: Box<dyn StreamTrait>,
 	player_state: PlayerState,
@@ -718,11 +725,13 @@ impl Player {
 }
 
 /// Represents a single song that has been decoded into memory, can be played in a <Player> struct.
+///
+/// The data in the song is stored in an <Arc> so cloning a song is a lightweight operation.
 #[derive(Debug, Clone)]
 pub struct Song {
-	samples: Vec<Vec<f32>>,
+	samples: Arc<Vec<Vec<f32>>>,
 	sample_rate: u32,
-	channel_count: u32,
+	channel_count: usize,
 	volume_adjustment: f32,
 }
 
@@ -752,34 +761,37 @@ impl Song {
 				.codec_params,
 			&DecoderOptions::default(),
 		)?;
-		let mut song: Option<Song> = None;
+		let mut song: Option<(Vec<Vec<f32>>, u32, usize)> = None;
 		loop {
 			match probe_result.format.next_packet() {
 				Ok(packet) => {
 					let decoded = decoder.decode(&packet)?;
 					let spec = *decoded.spec();
-					let song = if let Some(old_song) = &mut song {
-						if spec.rate != old_song.sample_rate
-							|| spec.channels.count() as u32 != old_song.channel_count
-						{
-							return Err(Report::msg("Sample rate or channel count of decoded does not match previous sample rate."));
-						}
-						old_song
-					} else {
-						song = Some(Song {
-							samples: vec![Vec::new(); spec.channels.count()],
-							sample_rate: spec.rate,
-							channel_count: spec.channels.count() as u32,
-							volume_adjustment: volume_adjustment.unwrap_or(1.0),
-						});
-						song.as_mut().unwrap()
-					};
+					let song_samples =
+						if let Some((samples, sample_rate, channel_count)) = &mut song {
+							ensure!(
+								spec.rate == *sample_rate,
+								"Sample rate of decoded does not match previous sample rate."
+							);
+							ensure!(
+								spec.channels.count() == *channel_count,
+								"Channel count of decoded does not match previous channel count."
+							);
+							samples
+						} else {
+							song = Some((
+								vec![Vec::new(); spec.channels.count()],
+								spec.rate,
+								spec.channels.count(),
+							));
+							&mut song.as_mut().unwrap().0
+						};
 					if decoded.frames() > 0 {
 						let mut samples = SampleBuffer::new(decoded.frames() as u64, spec);
 						samples.copy_interleaved_ref(decoded);
 						for frame in samples.samples().chunks(spec.channels.count()) {
 							for (chan, sample) in frame.iter().enumerate() {
-								song.samples[chan].push(*sample)
+								song_samples[chan].push(*sample)
 							}
 						}
 					} else {
@@ -790,9 +802,15 @@ impl Song {
 				Err(e) => return Err(e.into()),
 			}
 		}
-		song.ok_or_else(|| Report::msg("No song data decoded."))
+		song.map(|(samples, sample_rate, channel_count)| Song {
+			samples: Arc::new(samples),
+			sample_rate,
+			channel_count,
+			volume_adjustment: volume_adjustment.unwrap_or(1.0),
+		})
+		.ok_or_else(|| Report::msg("No song data decoded."))
 	}
-	/// Creates a [Song] by reading data from a file and using the file's extension as a format type hint.
+	/// Creates a [Song] by reading data from a file and using the file's extension as a format type hint. Takes an optional volume adjustment (used for e.g. replay gain)
 	pub fn from_file<P: AsRef<std::path::Path>>(
 		path: P,
 		volume_adjustment: Option<f32>,

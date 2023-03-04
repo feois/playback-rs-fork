@@ -18,7 +18,7 @@ fn main() -> Result<()> {
 	let song_filename = std::env::args()
 		.nth(1)
 		.expect("Expected one filename as the first argument.");
-	let player = Player::new()?;
+	let player = Player::new(None)?;
 	info!("Loading song '{}'...", song_filename);
 	let song = Song::from_file(&song_filename, None)?;
 	player.play_song_next(&song, None)?;
