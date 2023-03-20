@@ -68,13 +68,14 @@ impl DecodingSong {
 		song: &Song,
 		initial_pos: Duration,
 		player_sample_rate: usize,
-		channel_count: usize,
+		player_channel_count: usize,
 		expected_buffer_size: usize,
 		initial_playback_speed: f64,
 	) -> Result<DecodingSong> {
 		let frames = song.samples.clone();
+		let song_channel_count = song.channel_count;
 		let total_frames = frames[0].len();
-		let frames_per_resample = expected_buffer_size / channel_count;
+		let frames_per_resample = expected_buffer_size / player_channel_count;
 		let volume_adjustment = song.volume_adjustment;
 
 		let (rtx, rrx) = mpsc::sync_channel::<SampleRequest>(10);
@@ -98,7 +99,7 @@ impl DecodingSong {
 				MAXIMUM_SPEED_ADJUSTMENT_FACTOR,
 				params,
 				frames_per_resample, // SincFixedOut theoretically always gives us this much each time we process
-				channel_count,
+				player_channel_count,
 			) {
 				Ok(resampler) => {
 					etx.send(Ok(())).unwrap();
@@ -145,11 +146,11 @@ impl DecodingSong {
 				let frames_wanted_by_resampler = resampler.input_frames_next();
 				let last_frame = (current_frame + frames_wanted_by_resampler).min(total_frames);
 				let frames_we_have = last_frame - current_frame;
-				for i in 0..channel_count {
+				for i in 0..player_channel_count {
 					input_buffer[i].clear();
 					for j in 0..frames_wanted_by_resampler {
 						if current_frame + j < total_frames {
-							input_buffer[i].push(frames[i][current_frame + j]);
+							input_buffer[i].push(frames[i % song_channel_count][current_frame + j]);
 						} else {
 							input_buffer[i].push(0.0);
 						}
@@ -167,13 +168,13 @@ impl DecodingSong {
 							} else {
 								frames_per_resample
 							};
-							let mut samples = vec![0.0; channel_count * frame_count];
-							for chan in 0..channel_count {
+							let mut samples = vec![0.0; player_channel_count * frame_count];
+							for chan in 0..player_channel_count {
 								if chan < 2 || chan < output_buffer.len() {
 									for sample in 0..frame_count {
-										samples[sample * channel_count + chan] = output_buffer
-											[chan % output_buffer.len()][sample]
-											* volume_adjustment
+										samples[sample * player_channel_count + chan] =
+											output_buffer[chan % output_buffer.len()][sample]
+												* volume_adjustment
 									}
 								};
 							}
@@ -209,7 +210,7 @@ impl DecodingSong {
 		})?;
 		Ok(DecodingSong {
 			song_length,
-			channel_count,
+			channel_count: player_channel_count,
 			requests_channel: rtx,
 			samples_channel: Mutex::new(srx),
 			frames_per_resample,
@@ -396,13 +397,6 @@ impl PlayerState {
 		}
 	}
 	fn decode_song(&self, song: &Song, initial_pos: Duration) -> Result<DecodingSong> {
-		// FIXME: Update library to allow playing songs with a different number of channels than the player.
-		ensure!(
-			song.channel_count == self.channel_count,
-			"This player can only play songs with {} channels but the song has {} channels.",
-			self.channel_count,
-			song.channel_count
-		);
 		DecodingSong::new(
 			song,
 			initial_pos,
