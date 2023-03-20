@@ -74,6 +74,9 @@ impl DecodingSong {
 	) -> Result<DecodingSong> {
 		let frames = song.samples.clone();
 		let song_channel_count = song.channel_count;
+		if player_channel_count != song_channel_count {
+			warn!("Playing song with {song_channel_count} channels while the player has {player_channel_count} channels");
+		}
 		let total_frames = frames[0].len();
 		let frames_per_resample = expected_buffer_size / player_channel_count;
 		let volume_adjustment = song.volume_adjustment;
