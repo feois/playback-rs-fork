@@ -759,10 +759,25 @@ impl Song {
 			&DecoderOptions::default(),
 		)?;
 		let mut song: Option<(Vec<Vec<f32>>, u32, usize)> = None;
+		let mut bad_packet = false;
 		loop {
 			match probe_result.format.next_packet() {
 				Ok(packet) => {
-					let decoded = decoder.decode(&packet)?;
+					let decoded = match decoder.decode(&packet) {
+						Ok(decoded) => decoded,
+						Err(symphonia::core::errors::Error::DecodeError(err)) => {
+							// The example playback code doesn't treat decode errors as fatal errors,
+							// so just log this at most once per file.
+							if !bad_packet {
+								bad_packet = true;
+								warn!("Bad packet: {err:?}");
+							}
+							continue;
+						}
+						Err(err) => {
+							return Err(Report::new(err));
+						}
+					};
 					let spec = *decoded.spec();
 					let song_samples =
 						if let Some((samples, sample_rate, channel_count)) = &mut song {
