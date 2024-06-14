@@ -1,7 +1,7 @@
 #![warn(missing_docs)]
 #![doc(issue_tracker_base_url = "https://gitlab.101100.ca/veda/playback-rs/-/issues")]
 #![doc = include_str!("../docs.md")]
-#![feature(c_variadic)]
+// #![feature(c_variadic)]
 
 use std::collections::VecDeque;
 use std::num::Wrapping;
@@ -337,6 +337,7 @@ struct PlayerState {
 	sample_rate: usize,
 	buffer_size: u32,
 	playback_speed: Arc<RwLock<f64>>,
+	volume: Arc<RwLock<f32>>,
 }
 
 impl PlayerState {
@@ -349,6 +350,7 @@ impl PlayerState {
 			sample_rate: sample_rate as usize,
 			buffer_size,
 			playback_speed: Arc::new(RwLock::new(1.0)),
+			volume: Arc::new(RwLock::new(1.))
 		})
 	}
 	fn write_samples<T>(&self, data: &mut [T], _info: &OutputCallbackInfo)
@@ -359,6 +361,7 @@ impl PlayerState {
 			*sample = Sample::EQUILIBRIUM;
 		}
 		if *self.playing.read().unwrap() {
+			let volume = *self.volume.read().unwrap();
 			let playback_speed = *self.playback_speed.read().unwrap();
 			let mut playback = self.playback.write().unwrap();
 			if playback.is_none() {
@@ -372,6 +375,11 @@ impl PlayerState {
 				let data_len = data.len();
 				let (mut samples, mut new_pos, mut is_final) =
 					decoding_song.read_samples(*sample_pos, data_len, playback_speed);
+				
+				for f in &mut samples {
+					*f *= volume;
+				}
+				
 				for (i, sample) in data.iter_mut().enumerate() {
 					if i >= samples.len() {
 						if let Some((next_samples, next_pos)) =
@@ -428,6 +436,9 @@ impl PlayerState {
 	}
 	fn set_playing(&self, playing: bool) {
 		*self.playing.write().unwrap() = playing;
+	}
+	fn set_volume(&self, volume: f32) {
+		*self.volume.write().unwrap() = volume;
 	}
 	fn get_position(&self) -> Option<(Duration, Duration)> {
 		self.playback
@@ -687,6 +698,11 @@ impl Player {
 	pub fn set_playing(&self, playing: bool) {
 		self.player_state.set_playing(playing);
 	}
+	
+	pub fn set_volume(&self, volume: f32) {
+		self.player_state.set_volume(volume);
+	}
+	
 	/// Returns whether playback is currently paused.
 	///
 	/// See also [`set_playing`](Player::set_playing)
@@ -847,43 +863,43 @@ impl Song {
 	target_os = "netbsd"
 ))]
 fn block_alsa_output() {
-	use std::os::raw::{c_char, c_int};
+	// use std::os::raw::{c_char, c_int};
 
-	use alsa_sys::snd_lib_error_set_handler;
-	use log::trace;
+	// use alsa_sys::snd_lib_error_set_handler;
+	// use log::trace;
 
-	unsafe extern "C" fn error_handler(
-		file: *const c_char,
-		line: c_int,
-		function: *const c_char,
-		err: c_int,
-		format: *const c_char,
-		mut format_args: ...
-	) {
-		use std::ffi::CStr;
-		let file = String::from_utf8_lossy(CStr::from_ptr(file).to_bytes());
-		let function = String::from_utf8_lossy(CStr::from_ptr(function).to_bytes());
-		let format = String::from_utf8_lossy(CStr::from_ptr(format).to_bytes());
-		// FIXME: This should really be better, but it works for alsa so
-		let mut last_m = 0;
-		let formatted: String = format
-			.match_indices("%s")
-			.flat_map(|(m, s)| {
-				let res = [
-					format[last_m..m].to_string(),
-					String::from_utf8_lossy(
-						CStr::from_ptr(format_args.arg::<*const c_char>()).to_bytes(),
-					)
-					.to_string(),
-				];
-				last_m = m + s.len();
-				res
-			})
-			.collect();
-		trace!("ALSA Error: {err}: {file} ({line}): {function}: {formatted}");
-	}
+	// unsafe extern "C" fn error_handler(
+	// 	file: *const c_char,
+	// 	line: c_int,
+	// 	function: *const c_char,
+	// 	err: c_int,
+	// 	format: *const c_char,
+	// 	mut format_args: ...
+	// ) {
+	// 	use std::ffi::CStr;
+	// 	let file = String::from_utf8_lossy(CStr::from_ptr(file).to_bytes());
+	// 	let function = String::from_utf8_lossy(CStr::from_ptr(function).to_bytes());
+	// 	let format = String::from_utf8_lossy(CStr::from_ptr(format).to_bytes());
+	// 	// FIXME: This should really be better, but it works for alsa so
+	// 	let mut last_m = 0;
+	// 	let formatted: String = format
+	// 		.match_indices("%s")
+	// 		.flat_map(|(m, s)| {
+	// 			let res = [
+	// 				format[last_m..m].to_string(),
+	// 				String::from_utf8_lossy(
+	// 					CStr::from_ptr(format_args.arg::<*const c_char>()).to_bytes(),
+	// 				)
+	// 				.to_string(),
+	// 			];
+	// 			last_m = m + s.len();
+	// 			res
+	// 		})
+	// 		.collect();
+	// 	trace!("ALSA Error: {err}: {file} ({line}): {function}: {formatted}");
+	// }
 
-	unsafe {
-		snd_lib_error_set_handler(Some(error_handler));
-	}
+	// unsafe {
+	// 	snd_lib_error_set_handler(Some(error_handler));
+	// }
 }
