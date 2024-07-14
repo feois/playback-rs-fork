@@ -712,12 +712,13 @@ impl Player {
 			.playback
 			.read()
 			.expect("Current song mutex poisoned.")
-			.is_some() || self
-			.player_state
-			.next_samples
-			.read()
-			.expect("Next song mutex poisoned.")
 			.is_some()
+			|| self
+				.player_state
+				.next_samples
+				.read()
+				.expect("Next song mutex poisoned.")
+				.is_some()
 	}
 }
 

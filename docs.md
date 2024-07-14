@@ -22,37 +22,35 @@ This example plays two songs and showcases quite a few of the utility functions 
 ```rust
 use playback_rs::{Player, Song};
 
-fn main() {
-    let player = Player::new(None).expect("Failed to open an audio output."); // Create a player to play audio with cpal.
-    let song = Song::from_file("song.mp3", None).expect("Failed to load or decode the song."); // Decode a song from a file
-    player.play_song_next(&song, Some(std::time::Duration::from_secs(30))).expect("Failed to play the song starting at 0:30");
-    let song2 = Song::from_file("song2.flac", None).expect("Failed to load or decode the other song.");
-    player.play_song_next(&song, None).expect("Failed to play the other song");
+let player = Player::new(None).expect("Failed to open an audio output."); // Create a player to play audio with cpal.
+let song = Song::from_file("song.mp3", None).expect("Failed to load or decode the song."); // Decode a song from a file
+player.play_song_next(&song, Some(std::time::Duration::from_secs(30))).expect("Failed to play the song starting at 0:30");
+let song2 = Song::from_file("song2.flac", None).expect("Failed to load or decode the other song.");
+player.play_song_next(&song, None).expect("Failed to play the other song");
 
-    # #[cfg(not(doctest))]
-    std::thread::sleep(std::time::Duration::from_secs(5));
-    // Query playback position
-    println!("Playback position: {:?}", player.get_playback_position());
+# #[cfg(not(doctest))]
+std::thread::sleep(std::time::Duration::from_secs(5));
+// Query playback position
+println!("Playback position: {:?}", player.get_playback_position());
 
-    // Pause the song for a second
-    player.set_playing(false);
-    # #[cfg(not(doctest))]
+// Pause the song for a second
+player.set_playing(false);
+# #[cfg(not(doctest))]
+std::thread::sleep(std::time::Duration::from_secs(1));
+player.set_playing(true);
+# #[cfg(not(doctest))]
+std::thread::sleep(std::time::Duration::from_secs(5));
+// Seek forward to 30 seconds
+player.seek(std::time::Duration::from_secs(30));
+# #[cfg(not(doctest))]
+std::thread::sleep(std::time::Duration::from_secs(10));
+// Skip to the second song
+player.skip();
+
+// Wait until the song has ended to exit
+# #[cfg(not(doctest))]
+while player.has_current_song() {
     std::thread::sleep(std::time::Duration::from_secs(1));
-    player.set_playing(true);
-    # #[cfg(not(doctest))]
-    std::thread::sleep(std::time::Duration::from_secs(5));
-    // Seek forward to 30 seconds
-    player.seek(std::time::Duration::from_secs(30));
-    # #[cfg(not(doctest))]
-    std::thread::sleep(std::time::Duration::from_secs(10));
-    // Skip to the second song
-    player.skip();
-
-    // Wait until the song has ended to exit
-    # #[cfg(not(doctest))]
-    while player.has_current_song() {
-        std::thread::sleep(std::time::Duration::from_secs(1));
-    }
-    // Playback will automatically stop when the Player is dropped
 }
+// Playback will automatically stop when the Player is dropped
 ```
