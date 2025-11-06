@@ -27,6 +27,7 @@ use symphonia::core::meta::MetadataOptions;
 use symphonia::default;
 
 pub use symphonia::core::probe::Hint;
+use tokio::sync::Notify;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct SampleRequest {
@@ -87,6 +88,7 @@ impl DecodingSong {
 		let song_length = Self::frame_to_duration(total_frames, song_sample_rate);
 		let resample_ratio = player_sample_rate as f64 / song.sample_rate as f64;
 		let (etx, erx) = mpsc::channel();
+		
 		thread::spawn(move || {
 			let sinc_len = 128;
 			let f_cutoff = 0.925_914_65;
@@ -330,6 +332,7 @@ type PlaybackState = (DecodingSong, Duration);
 
 #[derive(Clone)]
 struct PlayerState {
+	notifier: Arc<Notify>,
 	playback: Arc<RwLock<Option<PlaybackState>>>,
 	next_samples: Arc<RwLock<Option<PlaybackState>>>,
 	playing: Arc<RwLock<bool>>,
@@ -343,6 +346,7 @@ struct PlayerState {
 impl PlayerState {
 	fn new(channel_count: u32, sample_rate: u32, buffer_size: FrameCount) -> Result<PlayerState> {
 		Ok(PlayerState {
+			notifier: Arc::new(Notify::new()),
 			playback: Arc::new(RwLock::new(None)),
 			next_samples: Arc::new(RwLock::new(None)),
 			playing: Arc::new(RwLock::new(true)),
@@ -404,6 +408,7 @@ impl PlayerState {
 			}
 			if done {
 				*playback = None;
+				self.notifier.notify_waiters();
 			}
 		}
 	}
@@ -701,6 +706,10 @@ impl Player {
 	
 	pub fn set_volume(&self, volume: f32) {
 		self.player_state.set_volume(volume);
+	}
+	
+	pub fn get_notifier(&self) -> &Arc<Notify> {
+		&self.player_state.notifier
 	}
 	
 	/// Returns whether playback is currently paused.

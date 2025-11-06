@@ -644,7 +644,7 @@ checksum = "7edddbd0b52d732b21ad9a5fab5c704c14cd949e5e9a1ec5929a24fded1b904c"
 
 [[package]]
 name = "playback-rs"
-version = "0.4.4"
+version = "0.4.5"
 dependencies = [
  "alsa-sys",
  "color-eyre",
@@ -653,6 +653,7 @@ dependencies = [
  "rubato",
  "simplelog",
  "symphonia",
+ "tokio",
 ]
 
 [[package]]
@@ -1118,6 +1119,15 @@ checksum = "30cfb0125f12d9c277f35663a0a33f8c30190f4e4574868a330595412d34ebf3"
 dependencies = [
  "num-conv",
  "time-core",
+]
+
+[[package]]
+name = "tokio"
+version = "1.48.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ff360e02eab121e0bc37a2d3b4d4dc622e6eda3a8e5253d5435ecf5bd4c68408"
+dependencies = [
+ "pin-project-lite",
 ]
 
 [[package]]
